@@ -1,14 +1,88 @@
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
+@source "./src/**/*.rs";
+@source "./index.html";
 
 @theme {
-  /* Modern AI Dark Mode Color Palette Configuration for Tailwind v4 */
+  /* Dynamic Theme Color Variables for Tailwind v4 */
+  --color-theme-bg: var(--color-theme-bg);
+  --color-theme-text: var(--color-theme-text);
+  --color-theme-accent: var(--color-theme-accent);
+  --color-theme-border: var(--color-theme-border);
+  --color-theme-muted: var(--color-theme-muted);
+  --color-theme-panel: var(--color-theme-panel);
+  --color-theme-input: var(--color-theme-input);
+
+  --font-serif: "Charter", "Georgia", "Cambria", "Times New Roman", Times, serif;
+
+  /* Retain previous configurations if needed */
   --color-bg-darkest: #0b0f19;
   --color-bg-dark: #0f172a;
   --color-bg-card: #1e293b;
-  
   --color-border-slate: #334155;
-  
   --color-accent-indigo: #6366f1;
   --color-accent-indigo_hover: #4f46e5;
   --color-accent-indigo-hover: #4f46e5;
+}
+
+/* Default fallback is Dark Mode */
+:root {
+  --color-theme-bg: #121212;
+  --color-theme-text: #E0E0E0;
+  --color-theme-accent: #A0A0A0;
+  --color-theme-border: #2D2D2D;
+  --color-theme-muted: #8E8E8E;
+  --color-theme-panel: #1A1A1A;
+  --color-theme-input: #181818;
+}
+
+/* 1. Light Mode (Adapting E-Ink visual palette to Light) */
+.theme-light {
+  --color-theme-bg: #F5F5F5;
+  --color-theme-text: #1C1C1C;
+  --color-theme-accent: #707070;
+  --color-theme-border: #E0E0E0;
+  --color-theme-muted: #666666;
+  --color-theme-panel: #EAEAEA;
+  --color-theme-input: #FFFFFF;
+}
+
+/* 2. Dark Mode (Adapting E-Ink visual palette to Dark) */
+.theme-dark {
+  --color-theme-bg: #121212;
+  --color-theme-text: #E0E0E0;
+  --color-theme-accent: #A0A0A0;
+  --color-theme-border: #2D2D2D;
+  --color-theme-muted: #8E8E8E;
+  --color-theme-panel: #1A1A1A;
+  --color-theme-input: #181818;
+}
+
+/* Dynamic prose colors matching the active theme variables */
+.prose {
+  --tw-prose-body: var(--color-theme-text);
+  --tw-prose-headings: var(--color-theme-text);
+  --tw-prose-lead: var(--color-theme-muted);
+  --tw-prose-links: var(--color-theme-accent);
+  --tw-prose-bold: var(--color-theme-text);
+  --tw-prose-counters: var(--color-theme-muted);
+  --tw-prose-bullets: var(--color-theme-accent);
+  --tw-prose-hr: var(--color-theme-border);
+  --tw-prose-quotes: var(--color-theme-text);
+  --tw-prose-quote-borders: var(--color-theme-border);
+  --tw-prose-captions: var(--color-theme-muted);
+  --tw-prose-code: var(--color-theme-text);
+  --tw-prose-pre-code: var(--color-theme-text);
+  --tw-prose-pre-bg: var(--color-theme-panel);
+  --tw-prose-th-borders: var(--color-theme-border);
+  --tw-prose-td-borders: var(--color-theme-border);
+}
+
+/* Smooth transitions for theme switches */
+.theme-transition {
+  transition: background-color 300ms cubic-bezier(0.4, 0, 0.2, 1),
+              color 300ms cubic-bezier(0.4, 0, 0.2, 1),
+              border-color 300ms cubic-bezier(0.4, 0, 0.2, 1),
+              fill 300ms cubic-bezier(0.4, 0, 0.2, 1),
+              stroke 300ms cubic-bezier(0.4, 0, 0.2, 1);
 }

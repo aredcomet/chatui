@@ -90,6 +90,139 @@ fn read_file_as_data_url(file: &web_sys::File) -> Result<js_sys::Promise, JsValu
     Ok(promise)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub enum AppTheme {
+    Light,
+    Dark,
+}
+
+impl AppTheme {
+    fn to_class(self) -> &'static str {
+        match self {
+            AppTheme::Light => "theme-light",
+            AppTheme::Dark => "theme-dark",
+        }
+    }
+}
+
+fn get_saved_theme() -> AppTheme {
+    if let Some(w) = web_sys::window() {
+        if let Ok(Some(ls)) = w.local_storage() {
+            if let Ok(Some(val)) = ls.get_item("chatui_theme") {
+                match val.as_str() {
+                    "light" => return AppTheme::Light,
+                    "dark" => return AppTheme::Dark,
+                    _ => {}
+                }
+            }
+        }
+    }
+    AppTheme::Dark // Default to Dark
+}
+
+fn save_theme(theme: AppTheme) {
+    if let Some(w) = web_sys::window() {
+        if let Ok(Some(ls)) = w.local_storage() {
+            let val = match theme {
+                AppTheme::Light => "light",
+                AppTheme::Dark => "dark",
+            };
+            let _ = ls.set_item("chatui_theme", val);
+        }
+    }
+}
+
+fn render_inline(text: String) -> Vec<AnyView> {
+    let mut views = Vec::new();
+    let mut current = String::new();
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if i + 1 < chars.len() && chars[i] == '*' && chars[i+1] == '*' {
+            if !current.is_empty() {
+                let c = current.clone();
+                views.push(view! { <span>{c}</span> }.into_any());
+                current.clear();
+            }
+            let mut j = i + 2;
+            let mut found = false;
+            while j + 1 < chars.len() {
+                if chars[j] == '*' && chars[j+1] == '*' {
+                    found = true;
+                    break;
+                }
+                j += 1;
+            }
+            if found {
+                let bold_text: String = chars[i+2..j].iter().collect();
+                views.push(view! { <strong class="font-bold text-theme-text">{bold_text}</strong> }.into_any());
+                i = j + 2;
+            } else {
+                current.push('*');
+                current.push('*');
+                i += 2;
+            }
+        } else if chars[i] == '`' {
+            if !current.is_empty() {
+                let c = current.clone();
+                views.push(view! { <span>{c}</span> }.into_any());
+                current.clear();
+            }
+            let mut j = i + 1;
+            let mut found = false;
+            while j < chars.len() {
+                if chars[j] == '`' {
+                    found = true;
+                    break;
+                }
+                j += 1;
+            }
+            if found {
+                let code_text: String = chars[i+1..j].iter().collect();
+                views.push(view! { <code class="px-1.5 py-0.5 rounded bg-theme-panel font-mono text-[13px] text-theme-accent">{code_text}</code> }.into_any());
+                i = j + 1;
+            } else {
+                current.push('`');
+                i += 1;
+            }
+        } else if chars[i] == '*' {
+            if !current.is_empty() {
+                let c = current.clone();
+                views.push(view! { <span>{c}</span> }.into_any());
+                current.clear();
+            }
+            let mut j = i + 1;
+            let mut found = false;
+            while j < chars.len() {
+                if chars[j] == '*' {
+                    if j + 1 < chars.len() && chars[j+1] == '*' {
+                        j += 2;
+                        continue;
+                    }
+                    found = true;
+                    break;
+                }
+                j += 1;
+            }
+            if found {
+                let italic_text: String = chars[i+1..j].iter().collect();
+                views.push(view! { <em class="italic text-theme-text">{italic_text}</em> }.into_any());
+                i = j + 1;
+            } else {
+                current.push('*');
+                i += 1;
+            }
+        } else {
+            current.push(chars[i]);
+            i += 1;
+        }
+    }
+    if !current.is_empty() {
+        views.push(view! { <span>{current}</span> }.into_any());
+    }
+    views
+}
+
 fn render_message_content(text: String) -> impl IntoView {
     let mut views = Vec::new();
     let parts = text.split("```");
@@ -112,44 +245,106 @@ fn render_message_content(text: String) -> impl IntoView {
             };
 
             views.push(view! {
-                <div class="my-3 rounded-lg overflow-hidden border border-slate-700/50 bg-black/40 font-mono text-sm max-w-full">
-                    <div class="flex justify-between items-center bg-slate-900 px-4 py-1.5 text-xs text-slate-400 border-b border-slate-800">
+                <div class="my-3 rounded-lg overflow-hidden border border-theme-border/60 bg-theme-panel font-mono text-sm max-w-full">
+                    <div class="flex justify-between items-center bg-theme-panel/85 px-4 py-1.5 text-xs text-theme-muted border-b border-theme-border/60 select-none">
                         <span>{if lang.is_empty() { "code".to_string() } else { lang.clone() }}</span>
                     </div>
-                    <pre class="p-4 overflow-x-auto text-indigo-200">
+                    <pre class="p-4 overflow-x-auto text-theme-text font-mono">
                         <code>{code_content}</code>
                     </pre>
                 </div>
             }.into_any());
         } else {
-            for line in part.lines() {
-                let trimmed = line.trim();
+            let mut current_paragraph = Vec::new();
+            let mut current_list = Vec::new();
+
+            let flush_paragraph = |para: &mut Vec<String>, views: &mut Vec<AnyView>| {
+                if !para.is_empty() {
+                    let para_text = para.join(" ");
+                    views.push(view! {
+                        <p class="text-theme-text py-1 leading-relaxed break-words">{render_inline(para_text)}</p>
+                    }.into_any());
+                    para.clear();
+                }
+            };
+
+            let flush_list = |list: &mut Vec<String>, views: &mut Vec<AnyView>| {
+                if !list.is_empty() {
+                    let list_items: Vec<_> = list.drain(..).map(|item| {
+                        view! {
+                            <li class="list-disc ml-6 text-theme-text py-0.5">{render_inline(item)}</li>
+                        }
+                    }).collect();
+                    views.push(view! {
+                        <ul class="space-y-1 my-1">
+                            {list_items}
+                        </ul>
+                    }.into_any());
+                }
+            };
+
+            let lines: Vec<&str> = part.lines().collect();
+            let mut i = 0;
+
+            while i < lines.len() {
+                let trimmed = lines[i].trim();
                 if trimmed.is_empty() {
+                    // Look ahead to see if the next non-empty line is a list item
+                    let mut next_list_item = false;
+                    let mut j = i + 1;
+                    while j < lines.len() {
+                        let next_trimmed = lines[j].trim();
+                        if !next_trimmed.is_empty() {
+                            if next_trimmed.starts_with("- ") || next_trimmed.starts_with("* ") {
+                                next_list_item = true;
+                            }
+                            break;
+                        }
+                        j += 1;
+                    }
+
+                    if !next_list_item {
+                        flush_list(&mut current_list, &mut views);
+                        flush_paragraph(&mut current_paragraph, &mut views);
+                    }
+                    i += 1;
                     continue;
                 }
 
                 if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
-                    views.push(view! {
-                        <li class="ml-6 list-disc text-slate-300 py-0.5">{trimmed[2..].to_string()}</li>
-                    }.into_any());
+                    flush_paragraph(&mut current_paragraph, &mut views);
+                    let content = trimmed[2..].to_string();
+                    current_list.push(content);
                 } else if trimmed.starts_with("### ") {
+                    flush_list(&mut current_list, &mut views);
+                    flush_paragraph(&mut current_paragraph, &mut views);
+                    let content = trimmed[4..].to_string();
                     views.push(view! {
-                        <h4 class="text-md font-bold text-white mt-4 mb-2">{trimmed[4..].to_string()}</h4>
+                        <h4 class="text-md font-bold text-theme-text mt-4 mb-2">{render_inline(content)}</h4>
                     }.into_any());
                 } else if trimmed.starts_with("## ") {
+                    flush_list(&mut current_list, &mut views);
+                    flush_paragraph(&mut current_paragraph, &mut views);
+                    let content = trimmed[3..].to_string();
                     views.push(view! {
-                        <h3 class="text-lg font-bold text-white mt-4 mb-2">{trimmed[3..].to_string()}</h3>
+                        <h3 class="text-lg font-bold text-theme-text mt-4 mb-2">{render_inline(content)}</h3>
                     }.into_any());
                 } else if trimmed.starts_with("# ") {
+                    flush_list(&mut current_list, &mut views);
+                    flush_paragraph(&mut current_paragraph, &mut views);
+                    let content = trimmed[2..].to_string();
                     views.push(view! {
-                        <h2 class="text-xl font-bold text-white mt-4 mb-2">{trimmed[2..].to_string()}</h2>
+                        <h2 class="text-xl font-bold text-theme-text mt-4 mb-2">{render_inline(content)}</h2>
                     }.into_any());
                 } else {
-                    views.push(view! {
-                        <p class="text-slate-300 py-1 leading-relaxed break-words">{trimmed.to_string()}</p>
-                    }.into_any());
+                    flush_list(&mut current_list, &mut views);
+                    current_paragraph.push(trimmed.to_string());
                 }
+                i += 1;
             }
+
+            flush_list(&mut current_list, &mut views);
+            flush_paragraph(&mut current_paragraph, &mut views);
         }
         is_code = !is_code;
     }
@@ -161,6 +356,8 @@ fn render_message_content(text: String) -> impl IntoView {
     }
 }
 
+
+
 #[component]
 pub fn App() -> impl IntoView {
     // Conversations state
@@ -169,6 +366,9 @@ pub fn App() -> impl IntoView {
     let (messages, set_messages) = signal(Vec::<ChatMessage>::new());
     let (input_text, set_input_text) = signal(String::new());
     let (attached_image, set_attached_image) = signal(None::<(String, String)>);
+
+    // Theme state
+    let (app_theme, set_app_theme) = signal(get_saved_theme());
 
     // Connections manager state
     let (connections, set_connections) = signal(Vec::<Connection>::new());
@@ -1170,18 +1370,21 @@ pub fn App() -> impl IntoView {
 
     view! {
         <div
-            class="flex h-screen w-screen overflow-hidden bg-bg-darkest text-slate-100 font-sans select-none"
+            class=move || format!(
+                "flex h-screen w-screen overflow-hidden bg-theme-bg text-theme-text font-sans select-none theme-transition {}",
+                app_theme.get().to_class()
+            )
             on:dragover=handle_drag_over
             on:drop=handle_drop
         >
             // ─── SIDEBAR ───
-            <aside class="flex flex-col w-72 bg-bg-darkest border-r border-slate-800/80 shrink-0">
+            <aside class="flex flex-col w-72 bg-theme-panel border-r border-theme-border/60 shrink-0 theme-transition">
                 // Sidebar Header
-                <div class="p-4 border-b border-slate-800/80">
+                <div class="p-4 border-b border-theme-border/60">
                     <button
                         on:click=create_new_chat
                         disabled=move || is_streaming.get()
-                        class="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl border border-slate-700/60 bg-slate-800/40 text-slate-200 font-medium hover:bg-slate-800 hover:text-white transition-all active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed"
+                        class="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl border border-theme-border bg-theme-bg/60 text-theme-text font-medium hover:bg-theme-bg hover:border-theme-accent/50 transition-all active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed theme-transition"
                     >
                         <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
@@ -1197,18 +1400,18 @@ pub fn App() -> impl IntoView {
                         let title = convo.title.clone();
                         let active = current_conversation_id.get() == Some(id.clone());
                         let active_class = if active {
-                            "bg-slate-800/80 text-white font-medium shadow-md shadow-black/10 border-l-2 border-accent-indigo"
+                            "bg-theme-bg text-theme-text font-semibold border-l-2 border-theme-accent"
                         } else {
-                            "text-slate-400 hover:bg-slate-800/30 hover:text-slate-200 border-l-2 border-transparent"
+                            "text-theme-muted hover:bg-theme-bg/40 hover:text-theme-text border-l-2 border-transparent"
                         };
-                        let active_trash_class = if active { "text-slate-400 hover:text-red-400" } else { "text-slate-500 hover:text-red-400" };
+                        let active_trash_class = if active { "text-theme-muted hover:text-red-400" } else { "text-theme-muted/70 hover:text-red-400" };
 
                         let id_trash = id.clone();
 
                         view! {
                             <div
                                 on:click=move |_| select_conversation(id.clone())
-                                class={format!("group flex items-center justify-between px-3 py-2.5 rounded-xl cursor-pointer transition-all {}", active_class)}
+                                class={format!("group flex items-center justify-between px-3 py-2.5 rounded-xl cursor-pointer transition-all theme-transition {}", active_class)}
                             >
                                 <div class="flex items-center gap-2.5 min-w-0 pr-2">
                                     <svg class="w-4 h-4 shrink-0 opacity-60" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1218,7 +1421,7 @@ pub fn App() -> impl IntoView {
                                 </div>
                                 <button
                                     on:click=move |ev| delete_chat(id_trash.clone(), ev)
-                                    class={format!("opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-slate-700/50 transition-all {}", active_trash_class)}
+                                    class={format!("opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-theme-bg transition-all {}", active_trash_class)}
                                 >
                                     <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
@@ -1230,10 +1433,10 @@ pub fn App() -> impl IntoView {
                 </div>
 
                 // Sidebar Footer (Connections settings trigger)
-                <div class="p-4 border-t border-slate-800/80 bg-slate-950/40">
+                <div class="p-4 border-t border-theme-border/60 bg-theme-panel">
                     <button
                         on:click=move |_| set_show_settings.set(true)
-                        class="w-full flex items-center justify-between px-3 py-2 rounded-xl text-slate-400 hover:bg-slate-850 hover:text-slate-200 transition-all"
+                        class="w-full flex items-center justify-between px-3 py-2 rounded-xl text-theme-muted hover:bg-theme-bg hover:text-theme-text transition-all theme-transition"
                     >
                         <div class="flex items-center gap-2.5">
                             <svg class="w-5 h-5 opacity-70" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1242,7 +1445,7 @@ pub fn App() -> impl IntoView {
                             </svg>
                             <span class="text-sm font-medium">"Connections & Keys"</span>
                         </div>
-                        <span class="bg-indigo-900/60 border border-indigo-700/60 text-indigo-300 font-mono text-[10px] py-0.5 px-2 rounded-full">
+                        <span class="bg-theme-bg border border-theme-border/80 text-theme-accent font-mono text-[10px] py-0.5 px-2 rounded-full theme-transition">
                             {move || connections.get().len()}
                         </span>
                     </button>
@@ -1250,16 +1453,16 @@ pub fn App() -> impl IntoView {
             </aside>
 
             // ─── MAIN CHAT AREA ───
-            <main class="flex-1 flex flex-col min-w-0 bg-bg-dark h-full relative">
+            <main class="flex-1 flex flex-col min-w-0 bg-theme-bg h-full relative theme-transition">
                 // Chat Header
-                <header class="flex items-center justify-between h-16 border-b border-slate-800/80 px-6 shrink-0 bg-bg-dark bg-opacity-70 backdrop-blur-md">
+                <header class="flex items-center justify-between h-16 border-b border-theme-border/60 px-6 shrink-0 bg-theme-bg/85 backdrop-blur-md theme-transition">
                     <div class="flex items-center gap-4">
                         // Active Connection Selector
                         <div class="flex items-center gap-2">
-                            <span class="text-xs text-slate-400 font-semibold uppercase tracking-wider select-none">"Connection:"</span>
+                            <span class="text-xs text-theme-muted font-semibold uppercase tracking-wider select-none">"Connection:"</span>
                             <select
                                 on:change=on_connection_change
-                                class="bg-slate-800 border border-slate-700/60 rounded-xl px-3 py-1.5 text-sm font-medium text-slate-200 outline-none cursor-pointer hover:border-slate-650 transition-all select-none"
+                                class="bg-theme-panel border border-theme-border/60 rounded-xl px-3 py-1.5 text-sm font-medium text-theme-text outline-none cursor-pointer hover:border-theme-accent/50 hover:bg-theme-bg transition-all select-none theme-transition"
                             >
                                 {move || {
                                     let conns = connections.get();
@@ -1283,10 +1486,10 @@ pub fn App() -> impl IntoView {
 
                         // Model selector (Filtered based on active connection enabled models)
                         <div class="flex items-center gap-2">
-                            <span class="text-xs text-slate-400 font-semibold uppercase tracking-wider select-none">"Model:"</span>
+                            <span class="text-xs text-theme-muted font-semibold uppercase tracking-wider select-none">"Model:"</span>
                             <select
                                 on:change=on_model_change
-                                class="bg-slate-800 border border-slate-700/60 rounded-xl px-3 py-1.5 text-sm font-medium text-slate-200 outline-none cursor-pointer hover:border-slate-650 transition-all select-none"
+                                class="bg-theme-panel border border-theme-border/60 rounded-xl px-3 py-1.5 text-sm font-medium text-theme-text outline-none cursor-pointer hover:border-theme-accent/50 hover:bg-theme-bg transition-all select-none theme-transition"
                             >
                                 {move || {
                                     let active_id = active_connection_id.get();
@@ -1310,24 +1513,64 @@ pub fn App() -> impl IntoView {
                         </div>
                     </div>
 
-                    // Temperature indicator
-                    <div class="flex items-center gap-2.5">
-                        <span class="text-xs text-slate-450 font-medium font-mono select-none">
-                            "Temp: " {move || format!("{:.1}", temperature.get())}
-                        </span>
-                        <input
-                            type="range"
-                            min="0.0"
-                            max="1.5"
-                            step="0.1"
-                            prop:value=move || temperature.get()
-                            on:input=move |ev| {
-                                if let Ok(val) = event_target_value(&ev).parse::<f32>() {
-                                    set_temperature.set(val);
+                    // Temperature indicator & Theme selector
+                    <div class="flex items-center gap-4">
+                        <div class="flex items-center gap-2">
+                            <span class="text-xs text-theme-muted font-medium font-mono select-none">
+                                "Temp: " {move || format!("{:.1}", temperature.get())}
+                            </span>
+                            <input
+                                type="range"
+                                min="0.0"
+                                max="1.5"
+                                step="0.1"
+                                prop:value=move || temperature.get()
+                                on:input=move |ev| {
+                                    if let Ok(val) = event_target_value(&ev).parse::<f32>() {
+                                        set_temperature.set(val);
+                                    }
                                 }
-                            }
-                            class="w-20 accent-accent-indigo h-1 rounded bg-slate-700 outline-none cursor-pointer"
-                        />
+                                class="w-16 accent-theme-accent h-1 rounded bg-theme-border/80 outline-none cursor-pointer theme-transition"
+                            />
+                        </div>
+
+                        // Theme switcher segmented control (Light / Dark)
+                        <div class="flex items-center gap-1 bg-theme-panel border border-theme-border/60 rounded-xl p-1 select-none theme-transition">
+                            <button
+                                type="button"
+                                title="Light Mode"
+                                class=move || format!("px-2.5 py-1 text-[11px] font-semibold rounded-lg transition-all {}",
+                                    if app_theme.get() == AppTheme::Light {
+                                        "bg-theme-bg text-theme-text shadow-sm border border-theme-border/20"
+                                    } else {
+                                        "text-theme-muted hover:text-theme-text"
+                                    }
+                                )
+                                on:click=move |_| {
+                                    set_app_theme.set(AppTheme::Light);
+                                    save_theme(AppTheme::Light);
+                                }
+                            >
+                                "Light"
+                            </button>
+                            <button
+                                type="button"
+                                title="Dark Mode"
+                                class=move || format!("px-2.5 py-1 text-[11px] font-semibold rounded-lg transition-all {}",
+                                    if app_theme.get() == AppTheme::Dark {
+                                        "bg-theme-bg text-theme-text shadow-sm border border-theme-border/20"
+                                    } else {
+                                        "text-theme-muted hover:text-theme-text"
+                                    }
+                                )
+                                on:click=move |_| {
+                                    set_app_theme.set(AppTheme::Dark);
+                                    save_theme(AppTheme::Dark);
+                                }
+                            >
+                                "Dark"
+                            </button>
+                        </div>
                     </div>
                 </header>
 
@@ -1339,14 +1582,14 @@ pub fn App() -> impl IntoView {
                     <Show
                         when=move || !messages.get().is_empty()
                         fallback=move || view! {
-                            <div class="flex flex-col items-center justify-center h-full max-w-lg mx-auto text-center space-y-4 select-none">
-                                <div class="p-4 rounded-3xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400">
+                            <div class="flex flex-col items-center justify-center h-full max-w-lg mx-auto text-center space-y-4 select-none transition-all theme-transition">
+                                <div class="p-4 rounded-3xl bg-theme-panel border border-theme-border text-theme-accent">
                                     <svg class="w-10 h-10" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
                                     </svg>
                                 </div>
-                                <h2 class="text-xl font-bold text-white">"Ask anything"</h2>
-                                <p class="text-sm text-slate-400 leading-relaxed">
+                                <h2 class="text-xl font-bold text-theme-text font-serif">"Ask anything"</h2>
+                                <p class="text-sm text-theme-muted leading-relaxed">
                                     "Select a connection, write your query, or drop an image file directly into the editor below to execute multimodal VLM inference securely."
                                 </p>
                             </div>
@@ -1354,260 +1597,329 @@ pub fn App() -> impl IntoView {
                     >
                         {move || messages.get().into_iter().enumerate().map(|(idx, msg)| {
                             let is_user = msg.role == MessageRole::User;
-                            let bg = if is_user { "bg-slate-800/90 text-slate-100 border border-slate-700/40 ml-auto" } else { "bg-slate-900/60 border border-slate-800/60 mr-auto" };
-                            let header = if is_user { "You" } else { "AI" };
-
                             let is_editing = editing_message_idx.get() == Some(idx);
                             let is_last_msg = idx == messages.get().len() - 1;
 
                             let active_ver = msg.versions.get(msg.active_version);
                             let content_parts = active_ver.map(|v| v.content.clone()).unwrap_or_default();
 
-                            view! {
-                                <div class={format!("flex flex-col max-w-[85%] rounded-2xl p-4 shadow-lg shadow-black/5 {}", bg)}>
-                                    <div class="flex items-center gap-2 mb-2 text-xs font-semibold text-slate-400 uppercase tracking-wider select-none">
-                                        {header}
-                                    </div>
-
-                                    <div class="space-y-3 max-w-full overflow-hidden">
-                                        <Show
-                                            when=move || is_editing
-                                            fallback=move || {
-                                                let parts = content_parts.clone();
-                                                view! {
-                                                    <div class="space-y-3 max-w-full overflow-hidden">
-                                                        {parts.iter().map(|part| match part {
-                                                            ContentPart::Text { text } => {
-                                                                render_message_content(text.clone()).into_any()
-                                                            }
-                                                            ContentPart::Image { mime_type, base64 } => {
-                                                                view! {
-                                                                    <div class="rounded-lg overflow-hidden border border-slate-700 max-w-sm mt-1">
-                                                                        <img
-                                                                            src={format!("data:{};base64,{}", mime_type, base64)}
-                                                                            class="w-full object-cover max-h-60"
-                                                                            alt="Attached Image"
-                                                                        />
-                                                                    </div>
-                                                                }.into_any()
-                                                            }
-                                                        }).collect::<Vec<_>>()}
-                                                    </div>
-                                                }
-                                            }
-                                        >
-                                            <div class="w-full flex flex-col space-y-2 mt-1">
-                                                <textarea
-                                                    id="inline-edit-textarea"
-                                                    class="w-full min-h-[80px] p-3 rounded-lg bg-slate-950 border border-slate-700 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 text-sm font-sans resize-none overflow-hidden"
-                                                    prop:value=editing_message_text
-                                                    on:input=move |ev: web_sys::Event| {
-                                                        let target = ev.target().unwrap().dyn_into::<web_sys::HtmlTextAreaElement>().unwrap();
-                                                        set_editing_message_text.set(target.value());
-                                                        let style = web_sys::HtmlElement::style(&target);
-                                                        let _ = style.set_property("height", "auto");
-                                                        let _ = style.set_property("height", &format!("{}px", target.scroll_height()));
-                                                    }
-                                                />
-                                                <div class="flex items-center gap-2 justify-end">
-                                                    <button
-                                                        type="button"
-                                                        class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
-                                                        on:click=move |_| set_editing_message_idx.set(None)
-                                                    >
-                                                        "Cancel"
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition-colors"
-                                                        on:click=move |_| save_edited_message(idx)
-                                                    >
-                                                        "Save"
-                                                    </button>
-                                                </div>
+                            if is_user {
+                                view! {
+                                    <div class="w-full flex justify-end py-2 select-text">
+                                        <div class="w-full max-w-[70ch] bg-theme-panel text-theme-text border border-theme-border/60 rounded-2xl p-4 shadow-sm transition-all theme-transition">
+                                            <div class="flex items-center gap-2 mb-2 text-xs font-semibold text-theme-muted uppercase tracking-wider select-none font-sans justify-end">
+                                                "You"
                                             </div>
-                                        </Show>
-                                    </div>
 
-                                    <Show when=move || !is_user && !is_editing>
-                                        {
-                                            let msg = msg.clone();
-                                            let active_ver = msg.versions.get(msg.active_version).cloned();
-                                            let total_versions = msg.versions.len();
-                                            let active_version_idx = msg.active_version;
-                                            
-                                            let show_stats = active_ver.as_ref().map(|v| v.ttft_ms.is_some() || v.tokens_per_sec.is_some() || v.total_tokens.is_some() || v.stop_reason.is_some()).unwrap_or(false);
-                                            
-                                            view! {
-                                                <div class="mt-2 flex flex-col gap-1.5">
-                                                    <Show when=move || show_stats>
-                                                        {
-                                                            let ver = active_ver.clone().unwrap();
-                                                            let stop_reason_for_cond = ver.stop_reason.clone();
-                                                            let stop_reason_for_text = ver.stop_reason.clone();
-                                                            view! {
-                                                                <div class="flex flex-wrap items-center gap-4 mt-1.5 text-[10px] font-mono text-slate-500 select-none">
-                                                                    <Show when=move || ver.tokens_per_sec.is_some()>
-                                                                        <div class="flex items-center gap-1">
-                                                                            <svg class="w-3 h-3 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                                                                                <path stroke-linecap="round" stroke-linejoin="round" d="M12 6V12h6a6 6 0 10-6-6z" />
-                                                                                <path stroke-linecap="round" stroke-linejoin="round" d="M12 2a10 10 0 1010 10A10 10 0 0012 2zm0 18a8 8 0 118-8 8 8 0 01-8 8z" />
-                                                                            </svg>
-                                                                            <span>{format!("{:.1} t/s", ver.tokens_per_sec.unwrap_or(0.0))}</span>
-                                                                        </div>
-                                                                    </Show>
-
-                                                                    <Show when=move || ver.total_tokens.is_some()>
-                                                                        <div class="flex items-center gap-1">
-                                                                            <svg class="w-3 h-3 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                                                                                <path stroke-linecap="round" stroke-linejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2H5a2 2 0 00-2 2v2m14-4V5a2 2 0 00-2-2H5a2 2 0 00-2 2v2" />
-                                                                            </svg>
-                                                                            <span>{format!("{} tokens", ver.total_tokens.unwrap_or(0))}</span>
-                                                                        </div>
-                                                                    </Show>
-
-                                                                    <Show when=move || ver.ttft_ms.is_some()>
-                                                                        <div class="flex items-center gap-1">
-                                                                            <svg class="w-3 h-3 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                                                                                <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                                                            </svg>
-                                                                            <span>{format!("{:.2}s TTFT", (ver.ttft_ms.unwrap_or(0) as f32) / 1000.0)}</span>
-                                                                        </div>
-                                                                    </Show>
-
-                                                                    <Show when=move || stop_reason_for_cond.is_some()>
-                                                                        <div class="flex items-center gap-1">
-                                                                            <span>{format!("Stop reason: {}", stop_reason_for_text.clone().unwrap_or_default())}</span>
-                                                                        </div>
-                                                                    </Show>
-                                                                </div>
-                                                            }
-                                                        }
-                                                    </Show>
-
-                                                    <div class="flex items-center justify-between mt-1 text-slate-500 text-xs">
-                                                        <Show when=move || (is_last_msg && total_versions > 1)>
-                                                            <div class="flex items-center gap-1 bg-slate-800/40 rounded-lg p-0.5 border border-slate-850">
-                                                                <button
-                                                                    type="button"
-                                                                    class="p-1 rounded hover:bg-slate-700/60 text-slate-400 hover:text-slate-200 disabled:opacity-30 disabled:hover:bg-transparent"
-                                                                    disabled=move || active_version_idx == 0
-                                                                    on:click=move |_| switch_version(idx, false)
-                                                                >
-                                                                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
-                                                                        <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" />
-                                                                    </svg>
-                                                                </button>
-                                                                <span class="text-[10px] font-mono font-semibold px-1 text-slate-300">
-                                                                    {format!("{} / {}", active_version_idx + 1, total_versions)}
-                                                                </span>
-                                                                <button
-                                                                    type="button"
-                                                                    class="p-1 rounded hover:bg-slate-700/60 text-slate-400 hover:text-slate-200 disabled:opacity-30 disabled:hover:bg-transparent"
-                                                                    disabled=move || active_version_idx + 1 == total_versions
-                                                                    on:click=move |_| switch_version(idx, true)
-                                                                >
-                                                                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
-                                                                        <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
-                                                                    </svg>
-                                                                </button>
-                                                            </div>
-                                                        </Show>
-                                                        <Show when=move || !(is_last_msg && total_versions > 1)>
-                                                            <div></div>
-                                                        </Show>
-
-                                                        <div class="flex items-center gap-1 select-none">
-                                                            <Show when=move || is_last_msg>
-                                                                <button
-                                                                    type="button"
-                                                                    title="Regenerate response"
-                                                                    class="p-1.5 rounded-lg hover:bg-slate-800 hover:text-slate-200 transition-colors disabled:opacity-30"
-                                                                    disabled=move || is_streaming.get()
-                                                                    on:click=move |_| retry_last_message(())
-                                                                >
-                                                                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                                                                        <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
-                                                                    </svg>
-                                                                </button>
-                                                            </Show>
-
-                                                            <Show when=move || is_last_msg>
-                                                                <button
-                                                                    type="button"
-                                                                    title="Continue generating"
-                                                                    class="p-1.5 rounded-lg hover:bg-slate-800 hover:text-slate-200 transition-colors disabled:opacity-30"
-                                                                    disabled=move || is_streaming.get()
-                                                                    on:click=move |_| continue_last_message(())
-                                                                >
-                                                                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                                                                        <path stroke-linecap="round" stroke-linejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3" />
-                                                                    </svg>
-                                                                </button>
-                                                            </Show>
-
-                                                            <button
-                                                                type="button"
-                                                                title="Branch conversation from here"
-                                                                class="p-1.5 rounded-lg hover:bg-slate-800 hover:text-slate-200 transition-colors disabled:opacity-30"
-                                                                disabled=move || is_streaming.get()
-                                                                on:click=move |_| branch_conversation(idx)
-                                                            >
-                                                                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M8 7a3 3 0 100-6 3 3 0 000 6zM8 17a3 3 0 100 6 3 3 0 000-6zM18 12a3 3 0 100-6 3 3 0 000 6zM8 7v10M8 12h7" />
-                                                                </svg>
-                                                            </button>
-
-                                                            <button
-                                                                type="button"
-                                                                title="Copy message"
-                                                                class="p-1.5 rounded-lg hover:bg-slate-800 hover:text-slate-200 transition-colors"
-                                                                on:click={
-                                                                    let text = msg.get_text();
-                                                                    move |_| copy_message_text(text.clone())
-                                                                }
-                                                            >
-                                                                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                                                                </svg>
-                                                            </button>
-
-                                                            <button
-                                                                type="button"
-                                                                title="Edit response"
-                                                                class="p-1.5 rounded-lg hover:bg-slate-800 hover:text-slate-200 transition-colors disabled:opacity-30"
-                                                                disabled=move || is_streaming.get()
-                                                                on:click={
-                                                                    let text = msg.get_text();
-                                                                    move |_| {
-                                                                        set_editing_message_idx.set(Some(idx));
-                                                                        set_editing_message_text.set(text.clone());
+                                            <div class="space-y-3 max-w-full overflow-hidden">
+                                                <Show
+                                                    when=move || is_editing
+                                                    fallback=move || {
+                                                        let parts = content_parts.clone();
+                                                        view! {
+                                                            <div class="space-y-3 max-w-full overflow-hidden font-sans text-sm">
+                                                                {parts.iter().map(|part| match part {
+                                                                    ContentPart::Text { text } => {
+                                                                        render_message_content(text.clone()).into_any()
                                                                     }
-                                                                }
-                                                            >
-                                                                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                                                                </svg>
-                                                            </button>
-
+                                                                    ContentPart::Image { mime_type, base64 } => {
+                                                                        view! {
+                                                                            <div class="rounded-lg overflow-hidden border border-theme-border max-w-sm mt-1">
+                                                                                <img
+                                                                                    src={format!("data:{};base64,{}", mime_type, base64)}
+                                                                                    class="w-full object-cover max-h-60"
+                                                                                    alt="Attached Image"
+                                                                                />
+                                                                            </div>
+                                                                        }.into_any()
+                                                                    }
+                                                                }).collect::<Vec<_>>()}
+                                                            </div>
+                                                        }
+                                                    }
+                                                >
+                                                    <div class="w-full flex flex-col space-y-2 mt-1 select-text">
+                                                        <textarea
+                                                            id="inline-edit-textarea"
+                                                            class="w-full min-h-[80px] p-3 rounded-lg bg-theme-input border border-theme-border text-theme-text placeholder-theme-muted/70 focus:outline-none focus:border-theme-accent text-sm font-sans resize-none overflow-hidden theme-transition"
+                                                            prop:value=editing_message_text
+                                                            on:input=move |ev: web_sys::Event| {
+                                                                let target = ev.target().unwrap().dyn_into::<web_sys::HtmlTextAreaElement>().unwrap();
+                                                                set_editing_message_text.set(target.value());
+                                                                let style = web_sys::HtmlElement::style(&target);
+                                                                let _ = style.set_property("height", "auto");
+                                                                let _ = style.set_property("height", &format!("{}px", target.scroll_height()));
+                                                            }
+                                                        />
+                                                        <div class="flex items-center gap-2 justify-end">
                                                             <button
                                                                 type="button"
-                                                                title="Delete response"
-                                                                class="p-1.5 rounded-lg hover:bg-slate-800 hover:text-red-400 transition-colors disabled:opacity-30"
-                                                                disabled=move || is_streaming.get()
-                                                                on:click=move |_| delete_message(idx)
+                                                                class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-theme-panel hover:bg-theme-border/80 text-theme-text border border-theme-border/60 transition-colors theme-transition"
+                                                                on:click=move |_| set_editing_message_idx.set(None)
                                                             >
-                                                                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                                                </svg>
+                                                                "Cancel"
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-theme-accent text-theme-bg hover:opacity-95 transition-all theme-transition"
+                                                                on:click=move |_| save_edited_message(idx)
+                                                            >
+                                                                "Save"
                                                             </button>
                                                         </div>
                                                     </div>
+                                                </Show>
+                                            </div>
+                                        </div>
+                                    </div>
+                                }.into_any()
+                            } else {
+                                view! {
+                                    <div class="w-full py-6 transition-all theme-transition select-text">
+                                        <div class="flex items-center gap-2 mb-3 text-xs font-semibold text-theme-muted uppercase tracking-wider select-none font-sans">
+                                            "AI"
+                                        </div>
+
+                                        <div class="prose max-w-none font-serif leading-relaxed text-theme-text overflow-hidden">
+                                            <Show
+                                                when=move || is_editing
+                                                fallback=move || {
+                                                    let parts = content_parts.clone();
+                                                    view! {
+                                                        <div class="space-y-4 max-w-full overflow-hidden">
+                                                            {parts.iter().map(|part| match part {
+                                                                ContentPart::Text { text } => {
+                                                                    render_message_content(text.clone()).into_any()
+                                                                }
+                                                                ContentPart::Image { mime_type, base64 } => {
+                                                                    view! {
+                                                                        <div class="rounded-lg overflow-hidden border border-theme-border max-w-sm mt-1">
+                                                                            <img
+                                                                                src={format!("data:{};base64,{}", mime_type, base64)}
+                                                                                class="w-full object-cover max-h-60"
+                                                                                alt="Attached Image"
+                                                                            />
+                                                                        </div>
+                                                                    }.into_any()
+                                                                }
+                                                            }).collect::<Vec<_>>()}
+                                                        </div>
+                                                    }
+                                                }
+                                            >
+                                                <div class="w-full flex flex-col space-y-2 mt-1 select-text">
+                                                    <textarea
+                                                        id="inline-edit-textarea"
+                                                        class="w-full min-h-[80px] p-3 rounded-lg bg-theme-input border border-theme-border text-theme-text placeholder-theme-muted/70 focus:outline-none focus:border-theme-accent text-sm font-sans resize-none overflow-hidden theme-transition"
+                                                        prop:value=editing_message_text
+                                                        on:input=move |ev: web_sys::Event| {
+                                                            let target = ev.target().unwrap().dyn_into::<web_sys::HtmlTextAreaElement>().unwrap();
+                                                            set_editing_message_text.set(target.value());
+                                                            let style = web_sys::HtmlElement::style(&target);
+                                                            let _ = style.set_property("height", "auto");
+                                                            let _ = style.set_property("height", &format!("{}px", target.scroll_height()));
+                                                        }
+                                                    />
+                                                    <div class="flex items-center gap-2 justify-end">
+                                                        <button
+                                                            type="button"
+                                                            class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-theme-panel hover:bg-theme-border/80 text-theme-text border border-theme-border/60 transition-colors theme-transition"
+                                                            on:click=move |_| set_editing_message_idx.set(None)
+                                                        >
+                                                            "Cancel"
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-theme-accent text-theme-bg hover:opacity-95 transition-all theme-transition"
+                                                            on:click=move |_| save_edited_message(idx)
+                                                        >
+                                                            "Save"
+                                                        </button>
+                                                    </div>
                                                 </div>
+                                            </Show>
+                                        </div>
+
+                                        <Show when=move || !is_editing>
+                                            {
+                                                let msg = msg.clone();
+                                                let active_ver = msg.versions.get(msg.active_version).cloned();
+                                                let total_versions = msg.versions.len();
+                                                let active_version_idx = msg.active_version;
+                                                
+                                                let show_stats = active_ver.as_ref().map(|v| v.ttft_ms.is_some() || v.tokens_per_sec.is_some() || v.total_tokens.is_some() || v.stop_reason.is_some()).unwrap_or(false);
+                                                
+                                                view! {
+                                                    <div class="mt-4 flex flex-col gap-1.5 font-sans">
+                                                        <Show when=move || show_stats>
+                                                            {
+                                                                let ver = active_ver.clone().unwrap();
+                                                                let stop_reason_for_cond = ver.stop_reason.clone();
+                                                                let stop_reason_for_text = ver.stop_reason.clone();
+                                                                view! {
+                                                                    <div class="flex flex-wrap items-center gap-4 mt-1.5 text-[10px] font-mono text-theme-muted select-none">
+                                                                        <Show when=move || ver.tokens_per_sec.is_some()>
+                                                                            <div class="flex items-center gap-1">
+                                                                                <svg class="w-3 h-3 text-theme-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 6V12h6a6 6 0 10-6-6z" />
+                                                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 2a10 10 0 1010 10A10 10 0 0012 2zm0 18a8 8 0 118-8 8 8 0 01-8 8z" />
+                                                                                </svg>
+                                                                                <span>{format!("{:.1} t/s", ver.tokens_per_sec.unwrap_or(0.0))}</span>
+                                                                            </div>
+                                                                        </Show>
+
+                                                                        <Show when=move || ver.total_tokens.is_some()>
+                                                                            <div class="flex items-center gap-1">
+                                                                                <svg class="w-3 h-3 text-theme-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2H5a2 2 0 00-2 2v2m14-4V5a2 2 0 00-2-2H5a2 2 0 00-2 2v2" />
+                                                                                </svg>
+                                                                                <span>{format!("{} tokens", ver.total_tokens.unwrap_or(0))}</span>
+                                                                            </div>
+                                                                        </Show>
+
+                                                                        <Show when=move || ver.ttft_ms.is_some()>
+                                                                            <div class="flex items-center gap-1">
+                                                                                <svg class="w-3 h-3 text-theme-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                                                                </svg>
+                                                                                <span>{format!("{:.2}s TTFT", (ver.ttft_ms.unwrap_or(0) as f32) / 1000.0)}</span>
+                                                                            </div>
+                                                                        </Show>
+
+                                                                        <Show when=move || stop_reason_for_cond.is_some()>
+                                                                            <div class="flex items-center gap-1">
+                                                                                <span>{format!("Stop reason: {}", stop_reason_for_text.clone().unwrap_or_default())}</span>
+                                                                            </div>
+                                                                        </Show>
+                                                                    </div>
+                                                                }
+                                                            }
+                                                        </Show>
+
+                                                        <div class="flex items-center justify-between mt-1 text-theme-muted text-xs select-none">
+                                                            <Show when=move || is_last_msg && (total_versions > 1)>
+                                                                <div class="flex items-center gap-1 bg-theme-panel rounded-lg p-0.5 border border-theme-border/60">
+                                                                    <button
+                                                                        type="button"
+                                                                        class="p-1 rounded hover:bg-theme-border/60 text-theme-muted hover:text-theme-text disabled:opacity-30 disabled:hover:bg-transparent transition-all"
+                                                                        disabled=move || active_version_idx == 0
+                                                                        on:click=move |_| switch_version(idx, false)
+                                                                    >
+                                                                        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                                                                            <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" />
+                                                                        </svg>
+                                                                    </button>
+                                                                    <span class="text-[10px] font-mono font-semibold px-1 text-theme-text">
+                                                                        {format!("{} / {}", active_version_idx + 1, total_versions)}
+                                                                    </span>
+                                                                    <button
+                                                                        type="button"
+                                                                        class="p-1 rounded hover:bg-theme-border/60 text-theme-muted hover:text-theme-text disabled:opacity-30 disabled:hover:bg-transparent transition-all"
+                                                                        disabled=move || active_version_idx + 1 == total_versions
+                                                                        on:click=move |_| switch_version(idx, true)
+                                                                    >
+                                                                        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                                                                            <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
+                                                                        </svg>
+                                                                    </button>
+                                                                </div>
+                                                            </Show>
+                                                            <Show when=move || !(is_last_msg && total_versions > 1)>
+                                                                <div></div>
+                                                            </Show>
+
+                                                            <div class="flex items-center gap-1 select-none">
+                                                                <Show when=move || is_last_msg>
+                                                                    <button
+                                                                        type="button"
+                                                                        title="Regenerate response"
+                                                                        class="p-1.5 rounded-lg hover:bg-theme-panel hover:text-theme-text text-theme-muted transition-colors disabled:opacity-30 theme-transition"
+                                                                        disabled=move || is_streaming.get()
+                                                                        on:click=move |_| retry_last_message(())
+                                                                    >
+                                                                        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                                                            <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+                                                                        </svg>
+                                                                    </button>
+                                                                </Show>
+
+                                                                <Show when=move || is_last_msg>
+                                                                    <button
+                                                                        type="button"
+                                                                        title="Continue generating"
+                                                                        class="p-1.5 rounded-lg hover:bg-theme-panel hover:text-theme-text text-theme-muted transition-colors disabled:opacity-30 theme-transition"
+                                                                        disabled=move || is_streaming.get()
+                                                                        on:click=move |_| continue_last_message(())
+                                                                    >
+                                                                        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                                                            <path stroke-linecap="round" stroke-linejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                                                                        </svg>
+                                                                    </button>
+                                                                </Show>
+
+                                                                <button
+                                                                    type="button"
+                                                                    title="Branch conversation from here"
+                                                                    class="p-1.5 rounded-lg hover:bg-theme-panel hover:text-theme-text text-theme-muted transition-colors disabled:opacity-30 theme-transition"
+                                                                    disabled=move || is_streaming.get()
+                                                                    on:click=move |_| branch_conversation(idx)
+                                                                >
+                                                                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                                                        <path stroke-linecap="round" stroke-linejoin="round" d="M8 7a3 3 0 100-6 3 3 0 000 6zM8 17a3 3 0 100 6 3 3 0 000-6zM18 12a3 3 0 100-6 3 3 0 000 6zM8 7v10M8 12h7" />
+                                                                    </svg>
+                                                                </button>
+
+                                                                <button
+                                                                    type="button"
+                                                                    title="Copy message"
+                                                                    class="p-1.5 rounded-lg hover:bg-theme-panel hover:text-theme-text text-theme-muted transition-colors theme-transition"
+                                                                    on:click={
+                                                                        let text = msg.get_text();
+                                                                        move |_| copy_message_text(text.clone())
+                                                                    }
+                                                                >
+                                                                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                                                        <path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                                                    </svg>
+                                                                </button>
+
+                                                                <button
+                                                                    type="button"
+                                                                    title="Edit response"
+                                                                    class="p-1.5 rounded-lg hover:bg-theme-panel hover:text-theme-text text-theme-muted transition-colors disabled:opacity-30 theme-transition"
+                                                                    disabled=move || is_streaming.get()
+                                                                    on:click={
+                                                                        let text = msg.get_text();
+                                                                        move |_| {
+                                                                            set_editing_message_idx.set(Some(idx));
+                                                                            set_editing_message_text.set(text.clone());
+                                                                        }
+                                                                    }
+                                                                >
+                                                                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                                                        <path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                                                    </svg>
+                                                                </button>
+
+                                                                <button
+                                                                    type="button"
+                                                                    title="Delete response"
+                                                                    class="p-1.5 rounded-lg hover:bg-theme-panel hover:text-red-400 text-theme-muted transition-colors disabled:opacity-30 theme-transition"
+                                                                    disabled=move || is_streaming.get()
+                                                                    on:click=move |_| delete_message(idx)
+                                                                >
+                                                                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                                                        <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                                    </svg>
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                }
                                             }
-                                        }
-                                    </Show>
-                                </div>
+                                        </Show>
+                                    </div>
+                                }.into_any()
                             }
                         }).collect::<Vec<_>>()}
                     </Show>
@@ -1617,28 +1929,28 @@ pub fn App() -> impl IntoView {
                         when=move || is_streaming.get()
                         fallback=move || view! {}
                     >
-                        <div class="flex flex-col max-w-[85%] rounded-2xl p-4 bg-slate-900/60 border border-slate-800/60 mr-auto shadow-lg shadow-black/5">
-                            <div class="flex items-center gap-2 mb-2 text-xs font-semibold text-slate-400 uppercase tracking-wider select-none">
+                        <div class="w-full py-6 transition-all theme-transition">
+                            <div class="flex items-center gap-2 mb-2 text-xs font-semibold text-theme-muted uppercase tracking-wider select-none font-sans">
                                 "AI is thinking..."
                             </div>
                             <div class="flex space-x-1.5 py-2.5">
-                                <div class="w-2 h-2 bg-indigo-500 rounded-full animate-bounce" style="animation-delay: 0ms"></div>
-                                <div class="w-2 h-2 bg-indigo-500 rounded-full animate-bounce" style="animation-delay: 150ms"></div>
-                                <div class="w-2 h-2 bg-indigo-500 rounded-full animate-bounce" style="animation-delay: 300ms"></div>
+                                <div class="w-2 h-2 bg-theme-accent rounded-full animate-bounce" style="animation-delay: 0ms"></div>
+                                <div class="w-2 h-2 bg-theme-accent rounded-full animate-bounce" style="animation-delay: 150ms"></div>
+                                <div class="w-2 h-2 bg-theme-accent rounded-full animate-bounce" style="animation-delay: 300ms"></div>
                             </div>
                         </div>
                     </Show>
                 </div>
 
                 // Bottom Prompt Box / Input
-                <footer class="p-6 border-t border-slate-800/80 bg-bg-dark shrink-0">
-                    <form on:submit=send_message class="max-w-4xl mx-auto flex flex-col gap-3 bg-slate-900/90 border border-slate-850 rounded-2xl p-3 shadow-2xl relative">
+                <footer class="p-6 border-t border-theme-border/60 bg-theme-bg shrink-0 theme-transition">
+                    <form on:submit=send_message class="max-w-4xl mx-auto flex flex-col gap-3 bg-theme-panel border border-theme-border/80 rounded-2xl p-3 shadow-sm relative theme-transition">
                         // Attached Image Thumbnail Preview
                         <Show
                             when=move || attached_image.get().is_some()
                             fallback=move || view! {}
                         >
-                            <div class="relative w-20 h-20 rounded-xl overflow-hidden border border-slate-700/80 group">
+                            <div class="relative w-20 h-20 rounded-xl overflow-hidden border border-theme-border group">
                                 <img
                                     src={move || {
                                         if let Some((mime, b64)) = attached_image.get() {
@@ -1674,7 +1986,7 @@ pub fn App() -> impl IntoView {
                                 />
                                 <label
                                     for="image-upload-el"
-                                    class="flex items-center justify-center p-2.5 rounded-xl border border-slate-800 bg-slate-850 hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-all cursor-pointer shadow shadow-black/10 active:scale-[0.96]"
+                                    class="flex items-center justify-center p-2.5 rounded-xl border border-theme-border/80 bg-theme-bg hover:bg-theme-border/40 text-theme-muted hover:text-theme-text transition-all cursor-pointer shadow shadow-black/10 active:scale-[0.96] theme-transition"
                                 >
                                     <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
@@ -1699,14 +2011,14 @@ pub fn App() -> impl IntoView {
                                     }
                                 }
                                 rows="1"
-                                class="flex-1 min-h-[42px] max-h-48 resize-none bg-transparent border-0 py-2.5 text-sm text-slate-100 placeholder-slate-500 outline-none scrollbar-none"
+                                class="flex-1 min-h-[42px] max-h-48 resize-none bg-transparent border-0 py-2.5 text-sm text-theme-text placeholder-theme-muted/70 outline-none scrollbar-none"
                             ></textarea>
 
                             <button
                                 type="submit"
                                 id="send-btn-el"
                                 disabled=move || is_streaming.get() || (input_text.get().trim().is_empty() && attached_image.get().is_none())
-                                class="shrink-0 flex items-center justify-center p-2.5 rounded-xl bg-accent-indigo hover:bg-accent-indigo_hover text-white transition-all shadow-md shadow-indigo-650/10 active:scale-[0.96] disabled:opacity-35 disabled:cursor-not-allowed"
+                                class="shrink-0 flex items-center justify-center p-2.5 rounded-xl bg-theme-accent text-theme-bg hover:opacity-95 transition-all shadow-md active:scale-[0.96] disabled:opacity-35 disabled:cursor-not-allowed theme-transition"
                             >
                                 <svg class="w-5 h-5 rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/>

@@ -1,0 +1,13 @@
+{
+  "name": "chatui-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build:css": "npx @tailwindcss/cli -i src/input.css -o styles.css",
+    "watch:css": "npx @tailwindcss/cli -i src/input.css -o styles.css --watch"
+  },
+  "devDependencies": {
+    "tailwindcss": "^4.0.0",
+    "@tailwindcss/cli": "^4.0.0"
+  }
+}

@@ -56,28 +56,94 @@ pub enum ContentPart {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MessageVersion {
+    pub content: Vec<ContentPart>,
+    pub ttft_ms: Option<u64>,
+    pub tokens_per_sec: Option<f32>,
+    pub total_tokens: Option<u32>,
+    pub stop_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ChatMessage {
     pub role: MessageRole,
-    pub content: Vec<ContentPart>,
+    pub versions: Vec<MessageVersion>,
+    pub active_version: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ChatMessageDeHelper {
+    Current {
+        role: MessageRole,
+        versions: Vec<MessageVersion>,
+        active_version: usize,
+    },
+    Legacy {
+        role: MessageRole,
+        content: Vec<ContentPart>,
+    },
+}
+
+impl<'de> Deserialize<'de> for ChatMessage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let helper = ChatMessageDeHelper::deserialize(deserializer)?;
+        match helper {
+            ChatMessageDeHelper::Current {
+                role,
+                versions,
+                active_version,
+            } => Ok(ChatMessage {
+                role,
+                versions,
+                active_version,
+            }),
+            ChatMessageDeHelper::Legacy { role, content } => Ok(ChatMessage {
+                role,
+                versions: vec![MessageVersion {
+                    content,
+                    ttft_ms: None,
+                    tokens_per_sec: None,
+                    total_tokens: None,
+                    stop_reason: None,
+                }],
+                active_version: 0,
+            }),
+        }
+    }
 }
 
 impl ChatMessage {
     pub fn new_text(role: MessageRole, text: String) -> Self {
         Self {
             role,
-            content: vec![ContentPart::Text { text }],
+            versions: vec![MessageVersion {
+                content: vec![ContentPart::Text { text }],
+                ttft_ms: None,
+                tokens_per_sec: None,
+                total_tokens: None,
+                stop_reason: None,
+            }],
+            active_version: 0,
         }
     }
 
     pub fn get_text(&self) -> String {
-        self.content
-            .iter()
-            .filter_map(|part| match part {
-                ContentPart::Text { text } => Some(text.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        if let Some(version) = self.versions.get(self.active_version) {
+            version.content
+                .iter()
+                .filter_map(|part| match part {
+                    ContentPart::Text { text } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            String::new()
+        }
     }
 }
 
@@ -106,4 +172,8 @@ pub struct StreamPayload {
     pub text: String,
     pub done: bool,
     pub error: Option<String>,
+    pub ttft_ms: Option<u64>,
+    pub tokens_per_sec: Option<f32>,
+    pub total_tokens: Option<u32>,
+    pub stop_reason: Option<String>,
 }

@@ -3,7 +3,7 @@ use leptos::{ev::SubmitEvent, prelude::*};
 use serde::Serialize;
 use shared::{
     ApiConfig, ChatConversation, ChatMessage, Connection, ContentPart, MessageRole, Provider,
-    StreamPayload,
+    StreamPayload, MessageVersion,
 };
 use wasm_bindgen::prelude::*;
 
@@ -201,6 +201,25 @@ pub fn App() -> impl IntoView {
     let (is_streaming, set_is_streaming) = signal(false);
     let (stream_chunks, set_stream_chunks) = signal(None::<StreamPayload>);
 
+    // Editing message state
+    let (editing_message_idx, set_editing_message_idx) = signal(None::<usize>);
+    let (editing_message_text, set_editing_message_text) = signal(String::new());
+
+    // Toast notification state
+    let (toast_message, set_toast_message) = signal(None::<String>);
+    let show_toast = move |msg: String| {
+        set_toast_message.set(Some(msg));
+        spawn_local(async move {
+            let promise = js_sys::Promise::new(&mut |resolve, _| {
+                if let Some(w) = web_sys::window() {
+                    let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 2000);
+                }
+            });
+            let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+            set_toast_message.set(None);
+        });
+    };
+
     // Memoized filtered models checklist
     let filtered_fetched_models = Memo::new(move |_| {
         let query = new_conn_search_query.get().to_lowercase();
@@ -272,6 +291,31 @@ pub fn App() -> impl IntoView {
         });
     });
 
+    // Effect to auto-resize the inline edit textarea when it is opened/mounted
+    Effect::new(move |_| {
+        if let Some(_) = editing_message_idx.get() {
+            spawn_local(async move {
+                let promise = js_sys::Promise::new(&mut |resolve, _| {
+                    if let Some(w) = web_sys::window() {
+                        let _ = w.request_animation_frame(&resolve);
+                    }
+                });
+                let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+                
+                if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                    if let Some(el) = doc.get_element_by_id("inline-edit-textarea") {
+                        if let Ok(textarea) = el.dyn_into::<web_sys::HtmlTextAreaElement>() {
+                            let style = web_sys::HtmlElement::style(&textarea);
+                            let _ = style.set_property("height", "auto");
+                            let scroll_height = textarea.scroll_height();
+                            let _ = style.set_property("height", &format!("{}px", scroll_height));
+                        }
+                    }
+                }
+            });
+        }
+    });
+
     // Streaming chunk listener
     Effect::new(move |_| {
         if let Some(payload) = stream_chunks.get() {
@@ -281,6 +325,16 @@ pub fn App() -> impl IntoView {
 
                 if payload.done {
                     set_is_streaming.set(false);
+                    if let Some(last_msg) = current_msgs.last_mut() {
+                        if last_msg.role == MessageRole::Assistant {
+                            if let Some(version) = last_msg.versions.get_mut(last_msg.active_version) {
+                                version.ttft_ms = payload.ttft_ms;
+                                version.tokens_per_sec = payload.tokens_per_sec;
+                                version.total_tokens = payload.total_tokens;
+                                version.stop_reason = payload.stop_reason.clone();
+                            }
+                        }
+                    }
                     if let Some(convo_id) = current_id {
                         let mut convos = conversations.get_untracked();
                         if let Some(convo) = convos.iter_mut().find(|c| c.id == convo_id) {
@@ -300,6 +354,7 @@ pub fn App() -> impl IntoView {
                         }
                         set_conversations.set(convos);
                     }
+                    set_messages.set(current_msgs);
                 } else if let Some(err_msg) = payload.error {
                     set_is_streaming.set(false);
                     current_msgs.push(ChatMessage::new_text(
@@ -310,11 +365,13 @@ pub fn App() -> impl IntoView {
                 } else {
                     if let Some(last_msg) = current_msgs.last_mut() {
                         if last_msg.role == MessageRole::Assistant {
-                            if let Some(ContentPart::Text {
-                                text: ref mut existing_text,
-                            }) = last_msg.content.first_mut()
-                            {
-                                existing_text.push_str(&payload.text);
+                            if let Some(version) = last_msg.versions.get_mut(last_msg.active_version) {
+                                if let Some(ContentPart::Text {
+                                    text: ref mut existing_text,
+                                }) = version.content.first_mut()
+                                {
+                                    existing_text.push_str(&payload.text);
+                                }
                             }
                         } else {
                             current_msgs.push(ChatMessage::new_text(
@@ -358,8 +415,13 @@ pub fn App() -> impl IntoView {
         set_selected_model.set(event_target_value(&ev));
     };
 
-    let update_input = move |ev| {
-        set_input_text.set(event_target_value(&ev));
+    let update_input = move |ev: web_sys::Event| {
+        let target = ev.target().unwrap().dyn_into::<web_sys::HtmlTextAreaElement>().unwrap();
+        set_input_text.set(target.value());
+        let style = web_sys::HtmlElement::style(&target);
+        let _ = style.set_property("height", "auto");
+        let scroll_height = target.scroll_height();
+        let _ = style.set_property("height", &format!("{}px", scroll_height));
     };
 
     // Chat navigation functions
@@ -505,6 +567,268 @@ pub fn App() -> impl IntoView {
         }
     };
 
+    // Message Control Helpers
+    let copy_message_text = move |text: String| {
+        if let Some(window) = web_sys::window() {
+            let navigator = window.navigator();
+            let clipboard = navigator.clipboard();
+            let _ = clipboard.write_text(&text);
+            show_toast("Copied to clipboard!".to_string());
+        }
+    };
+
+    let delete_message = move |idx: usize| {
+        if is_streaming.get_untracked() {
+            return;
+        }
+        let mut current_msgs = messages.get_untracked();
+        if idx < current_msgs.len() {
+            current_msgs.remove(idx);
+            set_messages.set(current_msgs.clone());
+            
+            // Save conversation
+            if let Some(convo_id) = current_conversation_id.get_untracked() {
+                let mut convos = conversations.get_untracked();
+                if let Some(convo) = convos.iter_mut().find(|c| c.id == convo_id) {
+                    convo.messages = current_msgs;
+                    convo.updated_at = js_sys::Date::now() as u64;
+                    let convo_clone = convo.clone();
+                    spawn_local(async move {
+                        let args = serde_wasm_bindgen::to_value(&SaveConversationArgs {
+                            conversation: convo_clone,
+                        })
+                        .unwrap();
+                        invoke("save_conversation", args).await;
+                    });
+                }
+            }
+        }
+    };
+
+    let save_edited_message = move |idx: usize| {
+        let mut current_msgs = messages.get_untracked();
+        if let Some(msg) = current_msgs.get_mut(idx) {
+            let new_text = editing_message_text.get_untracked();
+            
+            if let Some(version) = msg.versions.get_mut(msg.active_version) {
+                let mut has_text = false;
+                for part in &mut version.content {
+                    if let ContentPart::Text { text } = part {
+                        *text = new_text.clone();
+                        has_text = true;
+                        break;
+                    }
+                }
+                if !has_text {
+                    version.content.insert(0, ContentPart::Text { text: new_text.clone() });
+                }
+            }
+            
+            set_messages.set(current_msgs.clone());
+            set_editing_message_idx.set(None);
+            
+            // Save conversation
+            if let Some(convo_id) = current_conversation_id.get_untracked() {
+                let mut convos = conversations.get_untracked();
+                if let Some(convo) = convos.iter_mut().find(|c| c.id == convo_id) {
+                    convo.messages = current_msgs;
+                    convo.updated_at = js_sys::Date::now() as u64;
+                    let convo_clone = convo.clone();
+                    spawn_local(async move {
+                        let args = serde_wasm_bindgen::to_value(&SaveConversationArgs {
+                            conversation: convo_clone,
+                        })
+                        .unwrap();
+                        invoke("save_conversation", args).await;
+                    });
+                }
+            }
+        }
+    };
+
+    let switch_version = move |idx: usize, next: bool| {
+        let mut current_msgs = messages.get_untracked();
+        if let Some(msg) = current_msgs.get_mut(idx) {
+            let total_versions = msg.versions.len();
+            if total_versions <= 1 {
+                return;
+            }
+            if next {
+                if msg.active_version + 1 < total_versions {
+                    msg.active_version += 1;
+                }
+            } else {
+                if msg.active_version > 0 {
+                    msg.active_version -= 1;
+                }
+            }
+            set_messages.set(current_msgs.clone());
+            
+            // Save conversation
+            if let Some(convo_id) = current_conversation_id.get_untracked() {
+                let mut convos = conversations.get_untracked();
+                if let Some(convo) = convos.iter_mut().find(|c| c.id == convo_id) {
+                    convo.messages = current_msgs;
+                    convo.updated_at = js_sys::Date::now() as u64;
+                    let convo_clone = convo.clone();
+                    spawn_local(async move {
+                        let args = serde_wasm_bindgen::to_value(&SaveConversationArgs {
+                            conversation: convo_clone,
+                        })
+                        .unwrap();
+                        invoke("save_conversation", args).await;
+                    });
+                }
+            }
+        }
+    };
+
+    let branch_conversation = move |idx: usize| {
+        if is_streaming.get_untracked() {
+            return;
+        }
+        let current_convo_id = current_conversation_id.get_untracked();
+        if let Some(convo_id) = current_convo_id {
+            let mut convos = conversations.get_untracked();
+            if let Some(convo) = convos.iter().find(|c| c.id == convo_id) {
+                let uuid = uuid::Uuid::new_v4().to_string();
+                let branched_messages = convo.messages[..=idx].to_vec();
+                
+                let new_convo = ChatConversation {
+                    id: uuid.clone(),
+                    title: format!("Branch of {}", convo.title),
+                    model: convo.model.clone(),
+                    provider: convo.provider,
+                    messages: branched_messages.clone(),
+                    updated_at: js_sys::Date::now() as u64,
+                };
+                
+                convos.insert(0, new_convo.clone());
+                set_conversations.set(convos);
+                select_conversation(uuid.clone());
+                
+                let new_convo_c = new_convo.clone();
+                spawn_local(async move {
+                    let args = serde_wasm_bindgen::to_value(&SaveConversationArgs {
+                        conversation: new_convo_c,
+                    })
+                    .unwrap();
+                    invoke("save_conversation", args).await;
+                });
+            }
+        }
+    };
+
+    let retry_last_message = move |_| {
+        if is_streaming.get_untracked() {
+            return;
+        }
+        let mut current_msgs = messages.get_untracked();
+        if current_msgs.is_empty() {
+            return;
+        }
+        
+        let last_idx = current_msgs.len() - 1;
+        if current_msgs[last_idx].role != MessageRole::Assistant {
+            return;
+        }
+        
+        let new_version = MessageVersion {
+            content: vec![ContentPart::Text { text: String::new() }],
+            ttft_ms: None,
+            tokens_per_sec: None,
+            total_tokens: None,
+            stop_reason: None,
+        };
+        current_msgs[last_idx].versions.push(new_version);
+        let new_active = current_msgs[last_idx].versions.len() - 1;
+        current_msgs[last_idx].active_version = new_active;
+        
+        set_messages.set(current_msgs.clone());
+        set_is_streaming.set(true);
+        
+        let messages_history = current_msgs[..last_idx].to_vec();
+        
+        let active_id = match current_conversation_id.get_untracked() {
+            Some(id) => id,
+            None => return,
+        };
+        
+        let provider = selected_provider.get_untracked();
+        let model = selected_model.get_untracked();
+        let temp = temperature.get_untracked();
+        let conn_id = active_connection_id.get_untracked();
+        
+        let api_config = ApiConfig {
+            provider,
+            model,
+            temperature: temp,
+            max_tokens: None,
+            connection_id: conn_id,
+        };
+        
+        spawn_local(async move {
+            let args = serde_wasm_bindgen::to_value(&SendMessageStreamArgs {
+                conversation_id: active_id,
+                config: api_config,
+                messages: messages_history,
+            })
+            .unwrap();
+            
+            let promise = invoke_raw("send_message_stream", args);
+            let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+        });
+    };
+
+    let continue_last_message = move |_| {
+        if is_streaming.get_untracked() {
+            return;
+        }
+        let current_msgs = messages.get_untracked();
+        if current_msgs.is_empty() {
+            return;
+        }
+        
+        let last_idx = current_msgs.len() - 1;
+        if current_msgs[last_idx].role != MessageRole::Assistant {
+            return;
+        }
+        
+        set_is_streaming.set(true);
+        
+        let active_id = match current_conversation_id.get_untracked() {
+            Some(id) => id,
+            None => return,
+        };
+        
+        let provider = selected_provider.get_untracked();
+        let model = selected_model.get_untracked();
+        let temp = temperature.get_untracked();
+        let conn_id = active_connection_id.get_untracked();
+        
+        let api_config = ApiConfig {
+            provider,
+            model,
+            temperature: temp,
+            max_tokens: None,
+            connection_id: conn_id,
+        };
+        
+        let messages_history = current_msgs.clone();
+        
+        spawn_local(async move {
+            let args = serde_wasm_bindgen::to_value(&SendMessageStreamArgs {
+                conversation_id: active_id,
+                config: api_config,
+                messages: messages_history,
+            })
+            .unwrap();
+            
+            let promise = invoke_raw("send_message_stream", args);
+            let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+        });
+    };
+
     // Send Message
     let send_message = move |ev: SubmitEvent| {
         ev.prevent_default();
@@ -564,7 +888,14 @@ pub fn App() -> impl IntoView {
 
         let new_user_msg = ChatMessage {
             role: MessageRole::User,
-            content: parts,
+            versions: vec![MessageVersion {
+                content: parts,
+                ttft_ms: None,
+                tokens_per_sec: None,
+                total_tokens: None,
+                stop_reason: None,
+            }],
+            active_version: 0,
         };
 
         let mut active_msgs = messages.get_untracked();
@@ -572,6 +903,13 @@ pub fn App() -> impl IntoView {
         set_messages.set(active_msgs.clone());
 
         set_input_text.set(String::new());
+        if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+            if let Some(el) = doc.get_element_by_id("prompt-input-box") {
+                if let Ok(textarea) = el.dyn_into::<web_sys::HtmlTextAreaElement>() {
+                    let _ = web_sys::HtmlElement::style(&textarea).set_property("height", "auto");
+                }
+            }
+        }
         set_attached_image.set(None);
         set_is_streaming.set(true);
 
@@ -1014,10 +1352,16 @@ pub fn App() -> impl IntoView {
                             </div>
                         }
                     >
-                        {move || messages.get().iter().map(|msg| {
+                        {move || messages.get().into_iter().enumerate().map(|(idx, msg)| {
                             let is_user = msg.role == MessageRole::User;
                             let bg = if is_user { "bg-slate-800/90 text-slate-100 border border-slate-700/40 ml-auto" } else { "bg-slate-900/60 border border-slate-800/60 mr-auto" };
                             let header = if is_user { "You" } else { "AI" };
+
+                            let is_editing = editing_message_idx.get() == Some(idx);
+                            let is_last_msg = idx == messages.get().len() - 1;
+
+                            let active_ver = msg.versions.get(msg.active_version);
+                            let content_parts = active_ver.map(|v| v.content.clone()).unwrap_or_default();
 
                             view! {
                                 <div class={format!("flex flex-col max-w-[85%] rounded-2xl p-4 shadow-lg shadow-black/5 {}", bg)}>
@@ -1026,23 +1370,243 @@ pub fn App() -> impl IntoView {
                                     </div>
 
                                     <div class="space-y-3 max-w-full overflow-hidden">
-                                        {msg.content.iter().map(|part| match part {
-                                            ContentPart::Text { text } => {
-                                                render_message_content(text.clone()).into_any()
-                                            }
-                                            ContentPart::Image { mime_type, base64 } => {
+                                        <Show
+                                            when=move || is_editing
+                                            fallback=move || {
+                                                let parts = content_parts.clone();
                                                 view! {
-                                                    <div class="rounded-lg overflow-hidden border border-slate-700 max-w-sm mt-1">
-                                                        <img
-                                                            src={format!("data:{};base64,{}", mime_type, base64)}
-                                                            class="w-full object-cover max-h-60"
-                                                            alt="Attached Image"
-                                                        />
+                                                    <div class="space-y-3 max-w-full overflow-hidden">
+                                                        {parts.iter().map(|part| match part {
+                                                            ContentPart::Text { text } => {
+                                                                render_message_content(text.clone()).into_any()
+                                                            }
+                                                            ContentPart::Image { mime_type, base64 } => {
+                                                                view! {
+                                                                    <div class="rounded-lg overflow-hidden border border-slate-700 max-w-sm mt-1">
+                                                                        <img
+                                                                            src={format!("data:{};base64,{}", mime_type, base64)}
+                                                                            class="w-full object-cover max-h-60"
+                                                                            alt="Attached Image"
+                                                                        />
+                                                                    </div>
+                                                                }.into_any()
+                                                            }
+                                                        }).collect::<Vec<_>>()}
                                                     </div>
-                                                }.into_any()
+                                                }
                                             }
-                                        }).collect::<Vec<_>>()}
+                                        >
+                                            <div class="w-full flex flex-col space-y-2 mt-1">
+                                                <textarea
+                                                    id="inline-edit-textarea"
+                                                    class="w-full min-h-[80px] p-3 rounded-lg bg-slate-950 border border-slate-700 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 text-sm font-sans resize-none overflow-hidden"
+                                                    prop:value=editing_message_text
+                                                    on:input=move |ev: web_sys::Event| {
+                                                        let target = ev.target().unwrap().dyn_into::<web_sys::HtmlTextAreaElement>().unwrap();
+                                                        set_editing_message_text.set(target.value());
+                                                        let style = web_sys::HtmlElement::style(&target);
+                                                        let _ = style.set_property("height", "auto");
+                                                        let _ = style.set_property("height", &format!("{}px", target.scroll_height()));
+                                                    }
+                                                />
+                                                <div class="flex items-center gap-2 justify-end">
+                                                    <button
+                                                        type="button"
+                                                        class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                                                        on:click=move |_| set_editing_message_idx.set(None)
+                                                    >
+                                                        "Cancel"
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition-colors"
+                                                        on:click=move |_| save_edited_message(idx)
+                                                    >
+                                                        "Save"
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </Show>
                                     </div>
+
+                                    <Show when=move || !is_user && !is_editing>
+                                        {
+                                            let msg = msg.clone();
+                                            let active_ver = msg.versions.get(msg.active_version).cloned();
+                                            let total_versions = msg.versions.len();
+                                            let active_version_idx = msg.active_version;
+                                            
+                                            let show_stats = active_ver.as_ref().map(|v| v.ttft_ms.is_some() || v.tokens_per_sec.is_some() || v.total_tokens.is_some() || v.stop_reason.is_some()).unwrap_or(false);
+                                            
+                                            view! {
+                                                <div class="mt-2 flex flex-col gap-1.5">
+                                                    <Show when=move || show_stats>
+                                                        {
+                                                            let ver = active_ver.clone().unwrap();
+                                                            let stop_reason_for_cond = ver.stop_reason.clone();
+                                                            let stop_reason_for_text = ver.stop_reason.clone();
+                                                            view! {
+                                                                <div class="flex flex-wrap items-center gap-4 mt-1.5 text-[10px] font-mono text-slate-500 select-none">
+                                                                    <Show when=move || ver.tokens_per_sec.is_some()>
+                                                                        <div class="flex items-center gap-1">
+                                                                            <svg class="w-3 h-3 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                                                                <path stroke-linecap="round" stroke-linejoin="round" d="M12 6V12h6a6 6 0 10-6-6z" />
+                                                                                <path stroke-linecap="round" stroke-linejoin="round" d="M12 2a10 10 0 1010 10A10 10 0 0012 2zm0 18a8 8 0 118-8 8 8 0 01-8 8z" />
+                                                                            </svg>
+                                                                            <span>{format!("{:.1} t/s", ver.tokens_per_sec.unwrap_or(0.0))}</span>
+                                                                        </div>
+                                                                    </Show>
+
+                                                                    <Show when=move || ver.total_tokens.is_some()>
+                                                                        <div class="flex items-center gap-1">
+                                                                            <svg class="w-3 h-3 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                                                                <path stroke-linecap="round" stroke-linejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2H5a2 2 0 00-2 2v2m14-4V5a2 2 0 00-2-2H5a2 2 0 00-2 2v2" />
+                                                                            </svg>
+                                                                            <span>{format!("{} tokens", ver.total_tokens.unwrap_or(0))}</span>
+                                                                        </div>
+                                                                    </Show>
+
+                                                                    <Show when=move || ver.ttft_ms.is_some()>
+                                                                        <div class="flex items-center gap-1">
+                                                                            <svg class="w-3 h-3 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                                                                <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                                                            </svg>
+                                                                            <span>{format!("{:.2}s TTFT", (ver.ttft_ms.unwrap_or(0) as f32) / 1000.0)}</span>
+                                                                        </div>
+                                                                    </Show>
+
+                                                                    <Show when=move || stop_reason_for_cond.is_some()>
+                                                                        <div class="flex items-center gap-1">
+                                                                            <span>{format!("Stop reason: {}", stop_reason_for_text.clone().unwrap_or_default())}</span>
+                                                                        </div>
+                                                                    </Show>
+                                                                </div>
+                                                            }
+                                                        }
+                                                    </Show>
+
+                                                    <div class="flex items-center justify-between mt-1 text-slate-500 text-xs">
+                                                        <Show when=move || (is_last_msg && total_versions > 1)>
+                                                            <div class="flex items-center gap-1 bg-slate-800/40 rounded-lg p-0.5 border border-slate-850">
+                                                                <button
+                                                                    type="button"
+                                                                    class="p-1 rounded hover:bg-slate-700/60 text-slate-400 hover:text-slate-200 disabled:opacity-30 disabled:hover:bg-transparent"
+                                                                    disabled=move || active_version_idx == 0
+                                                                    on:click=move |_| switch_version(idx, false)
+                                                                >
+                                                                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                                                                        <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" />
+                                                                    </svg>
+                                                                </button>
+                                                                <span class="text-[10px] font-mono font-semibold px-1 text-slate-300">
+                                                                    {format!("{} / {}", active_version_idx + 1, total_versions)}
+                                                                </span>
+                                                                <button
+                                                                    type="button"
+                                                                    class="p-1 rounded hover:bg-slate-700/60 text-slate-400 hover:text-slate-200 disabled:opacity-30 disabled:hover:bg-transparent"
+                                                                    disabled=move || active_version_idx + 1 == total_versions
+                                                                    on:click=move |_| switch_version(idx, true)
+                                                                >
+                                                                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                                                                        <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
+                                                                    </svg>
+                                                                </button>
+                                                            </div>
+                                                        </Show>
+                                                        <Show when=move || !(is_last_msg && total_versions > 1)>
+                                                            <div></div>
+                                                        </Show>
+
+                                                        <div class="flex items-center gap-1 select-none">
+                                                            <Show when=move || is_last_msg>
+                                                                <button
+                                                                    type="button"
+                                                                    title="Regenerate response"
+                                                                    class="p-1.5 rounded-lg hover:bg-slate-800 hover:text-slate-200 transition-colors disabled:opacity-30"
+                                                                    disabled=move || is_streaming.get()
+                                                                    on:click=move |_| retry_last_message(())
+                                                                >
+                                                                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                                                        <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+                                                                    </svg>
+                                                                </button>
+                                                            </Show>
+
+                                                            <Show when=move || is_last_msg>
+                                                                <button
+                                                                    type="button"
+                                                                    title="Continue generating"
+                                                                    class="p-1.5 rounded-lg hover:bg-slate-800 hover:text-slate-200 transition-colors disabled:opacity-30"
+                                                                    disabled=move || is_streaming.get()
+                                                                    on:click=move |_| continue_last_message(())
+                                                                >
+                                                                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                                                        <path stroke-linecap="round" stroke-linejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                                                                    </svg>
+                                                                </button>
+                                                            </Show>
+
+                                                            <button
+                                                                type="button"
+                                                                title="Branch conversation from here"
+                                                                class="p-1.5 rounded-lg hover:bg-slate-800 hover:text-slate-200 transition-colors disabled:opacity-30"
+                                                                disabled=move || is_streaming.get()
+                                                                on:click=move |_| branch_conversation(idx)
+                                                            >
+                                                                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M8 7a3 3 0 100-6 3 3 0 000 6zM8 17a3 3 0 100 6 3 3 0 000-6zM18 12a3 3 0 100-6 3 3 0 000 6zM8 7v10M8 12h7" />
+                                                                </svg>
+                                                            </button>
+
+                                                            <button
+                                                                type="button"
+                                                                title="Copy message"
+                                                                class="p-1.5 rounded-lg hover:bg-slate-800 hover:text-slate-200 transition-colors"
+                                                                on:click={
+                                                                    let text = msg.get_text();
+                                                                    move |_| copy_message_text(text.clone())
+                                                                }
+                                                            >
+                                                                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                                                </svg>
+                                                            </button>
+
+                                                            <button
+                                                                type="button"
+                                                                title="Edit response"
+                                                                class="p-1.5 rounded-lg hover:bg-slate-800 hover:text-slate-200 transition-colors disabled:opacity-30"
+                                                                disabled=move || is_streaming.get()
+                                                                on:click={
+                                                                    let text = msg.get_text();
+                                                                    move |_| {
+                                                                        set_editing_message_idx.set(Some(idx));
+                                                                        set_editing_message_text.set(text.clone());
+                                                                    }
+                                                                }
+                                                            >
+                                                                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                                                </svg>
+                                                            </button>
+
+                                                            <button
+                                                                type="button"
+                                                                title="Delete response"
+                                                                class="p-1.5 rounded-lg hover:bg-slate-800 hover:text-red-400 transition-colors disabled:opacity-30"
+                                                                disabled=move || is_streaming.get()
+                                                                on:click=move |_| delete_message(idx)
+                                                            >
+                                                                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                                </svg>
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            }
+                                        }
+                                    </Show>
                                 </div>
                             }
                         }).collect::<Vec<_>>()}
@@ -1470,6 +2034,16 @@ pub fn App() -> impl IntoView {
                             </button>
                         </div>
                     </div>
+                </div>
+            </Show>
+
+            // Toast Notification
+            <Show when=move || toast_message.get().is_some()>
+                <div class="fixed bottom-6 right-6 z-50 px-4 py-3 rounded-xl bg-slate-950 border border-slate-800 text-slate-100 text-xs font-semibold shadow-2xl flex items-center gap-2 select-none">
+                    <svg class="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <span>{move || toast_message.get().unwrap_or_default()}</span>
                 </div>
             </Show>
         </div>

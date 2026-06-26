@@ -48,6 +48,7 @@ struct OpenAiStreamChunk {
 #[derive(Deserialize)]
 struct OpenAiStreamChoice {
     delta: OpenAiStreamDelta,
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -105,6 +106,7 @@ struct AnthropicStreamChunk {
 #[derive(Deserialize)]
 struct AnthropicStreamDelta {
     text: Option<String>,
+    stop_reason: Option<String>,
 }
 
 // Gemini API request structures
@@ -149,6 +151,8 @@ struct GeminiStreamChunk {
 #[derive(Deserialize)]
 struct GeminiStreamCandidate {
     content: Option<GeminiStreamContent>,
+    #[serde(rename = "finishReason")]
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -168,8 +172,13 @@ fn convert_to_openai_message(msg: &ChatMessage) -> OpenAiMessage {
         MessageRole::Assistant => "assistant".to_string(),
     };
 
-    let content = if msg.content.len() == 1 {
-        match &msg.content[0] {
+    let msg_content = match msg.versions.get(msg.active_version) {
+        Some(v) => &v.content,
+        None => &msg.versions[0].content,
+    };
+
+    let content = if msg_content.len() == 1 {
+        match &msg_content[0] {
             ContentPart::Text { text } => OpenAiContent::Text(text.clone()),
             ContentPart::Image { mime_type, base64 } => {
                 OpenAiContent::Parts(vec![OpenAiContentPart::ImageUrl {
@@ -180,8 +189,7 @@ fn convert_to_openai_message(msg: &ChatMessage) -> OpenAiMessage {
             }
         }
     } else {
-        let parts = msg
-            .content
+        let parts = msg_content
             .iter()
             .map(|part| match part {
                 ContentPart::Text { text } => OpenAiContentPart::Text { text: text.clone() },
@@ -218,8 +226,13 @@ fn convert_to_anthropic(
                     _ => "assistant".to_string(),
                 };
 
-                let content = if msg.content.len() == 1 {
-                    match &msg.content[0] {
+                let msg_content = match msg.versions.get(msg.active_version) {
+                    Some(v) => &v.content,
+                    None => &msg.versions[0].content,
+                };
+
+                let content = if msg_content.len() == 1 {
+                    match &msg_content[0] {
                         ContentPart::Text { text } => AnthropicContent::Text(text.clone()),
                         ContentPart::Image { mime_type, base64 } => {
                             AnthropicContent::Parts(vec![AnthropicContentPart::Image {
@@ -232,8 +245,7 @@ fn convert_to_anthropic(
                         }
                     }
                 } else {
-                    let parts = msg
-                        .content
+                    let parts = msg_content
                         .iter()
                         .map(|part| match part {
                             ContentPart::Text { text } => {
@@ -284,8 +296,12 @@ fn convert_to_gemini(messages: &[ChatMessage], temperature: f32) -> GeminiReques
             MessageRole::System => continue, // Prepend system message to first user msg below
         };
 
-        let parts = msg
-            .content
+        let msg_content = match msg.versions.get(msg.active_version) {
+            Some(v) => &v.content,
+            None => &msg.versions[0].content,
+        };
+
+        let parts = msg_content
             .iter()
             .map(|part| match part {
                 ContentPart::Text { text } => GeminiPart::Text { text: text.clone() },
@@ -460,7 +476,7 @@ pub async fn stream_chat_completion(
     let conversation_id_clone = conversation_id.clone();
     let window_clone = window.clone();
 
-    let result: Result<(), String> = async move {
+    let result: Result<StreamPayload, String> = async move {
         match config.provider {
             Provider::OpenAI | Provider::OpenRouter | Provider::CustomOpenAICompliant => {
                 let url = if let Some(mut base) = base_url {
@@ -512,6 +528,11 @@ pub async fn stream_chat_completion(
                     return Err(format!("API error ({}): {}", status, err_text));
                 }
 
+                let start_time = std::time::Instant::now();
+                let mut first_token_time = None;
+                let mut token_count = 0;
+                let mut stop_reason = None;
+
                 let mut stream = response.bytes_stream();
                 let mut buffer = Vec::new();
 
@@ -534,27 +555,56 @@ pub async fn stream_chat_completion(
                             }
 
                             if let Ok(chunk) = serde_json::from_str::<OpenAiStreamChunk>(data) {
-                                if let Some(content) = chunk
-                                    .choices
-                                    .first()
-                                    .and_then(|c| c.delta.content.as_ref())
-                                {
-                                    window
-                                        .emit(
-                                            "chat-stream-chunk",
-                                            StreamPayload {
-                                                conversation_id: conversation_id.clone(),
-                                                text: content.clone(),
-                                                done: false,
-                                                error: None,
-                                            },
-                                        )
-                                        .map_err(|e| e.to_string())?;
+                                if let Some(choice) = chunk.choices.first() {
+                                    if let Some(content) = &choice.delta.content {
+                                        if first_token_time.is_none() {
+                                            first_token_time = Some(start_time.elapsed());
+                                        }
+                                        token_count += 1;
+
+                                        window
+                                            .emit(
+                                                "chat-stream-chunk",
+                                                StreamPayload {
+                                                    conversation_id: conversation_id.clone(),
+                                                    text: content.clone(),
+                                                    done: false,
+                                                    error: None,
+                                                    ttft_ms: None,
+                                                    tokens_per_sec: None,
+                                                    total_tokens: None,
+                                                    stop_reason: None,
+                                                },
+                                            )
+                                            .map_err(|e| e.to_string())?;
+                                    }
+                                    if let Some(finish) = &choice.finish_reason {
+                                        stop_reason = Some(finish.clone());
+                                    }
                                 }
                             }
                         }
                     }
                 }
+
+                let total_duration = start_time.elapsed();
+                let ttft_ms = first_token_time.map(|d| d.as_millis() as u64);
+                let tokens_per_sec = if total_duration.as_secs_f32() > 0.0 {
+                    token_count as f32 / total_duration.as_secs_f32()
+                } else {
+                    0.0
+                };
+
+                Ok(StreamPayload {
+                    conversation_id: conversation_id.clone(),
+                    text: "".to_string(),
+                    done: true,
+                    error: None,
+                    ttft_ms,
+                    tokens_per_sec: Some(tokens_per_sec),
+                    total_tokens: Some(token_count),
+                    stop_reason: Some(stop_reason.unwrap_or_else(|| "stop".to_string())),
+                })
             }
             Provider::Claude => {
                 let url = "https://api.anthropic.com/v1/messages";
@@ -597,6 +647,11 @@ pub async fn stream_chat_completion(
                     ));
                 }
 
+                let start_time = std::time::Instant::now();
+                let mut first_token_time = None;
+                let mut token_count = 0;
+                let mut stop_reason = None;
+
                 let mut stream = response.bytes_stream();
                 let mut buffer = Vec::new();
 
@@ -616,19 +671,33 @@ pub async fn stream_chat_completion(
                             let data = &line[6..];
                             if let Ok(chunk) = serde_json::from_str::<AnthropicStreamChunk>(data) {
                                 if chunk.chunk_type == "content_block_delta" {
-                                    if let Some(delta) = chunk.delta {
-                                        if let Some(text) = delta.text {
+                                    if let Some(delta) = &chunk.delta {
+                                        if let Some(text) = &delta.text {
+                                            if first_token_time.is_none() {
+                                                first_token_time = Some(start_time.elapsed());
+                                            }
+                                            token_count += 1;
                                             window
                                                 .emit(
                                                     "chat-stream-chunk",
                                                     StreamPayload {
                                                         conversation_id: conversation_id.clone(),
-                                                        text,
+                                                        text: text.clone(),
                                                         done: false,
                                                         error: None,
+                                                        ttft_ms: None,
+                                                        tokens_per_sec: None,
+                                                        total_tokens: None,
+                                                        stop_reason: None,
                                                     },
                                                 )
                                                 .map_err(|e| e.to_string())?;
+                                        }
+                                    }
+                                } else if chunk.chunk_type == "message_delta" {
+                                    if let Some(delta) = &chunk.delta {
+                                        if let Some(reason) = &delta.stop_reason {
+                                            stop_reason = Some(reason.clone());
                                         }
                                     }
                                 }
@@ -636,6 +705,25 @@ pub async fn stream_chat_completion(
                         }
                     }
                 }
+
+                let total_duration = start_time.elapsed();
+                let ttft_ms = first_token_time.map(|d| d.as_millis() as u64);
+                let tokens_per_sec = if total_duration.as_secs_f32() > 0.0 {
+                    token_count as f32 / total_duration.as_secs_f32()
+                } else {
+                    0.0
+                };
+
+                Ok(StreamPayload {
+                    conversation_id: conversation_id.clone(),
+                    text: "".to_string(),
+                    done: true,
+                    error: None,
+                    ttft_ms,
+                    tokens_per_sec: Some(tokens_per_sec),
+                    total_tokens: Some(token_count),
+                    stop_reason: Some(stop_reason.unwrap_or_else(|| "end_turn".to_string())),
+                })
             }
             Provider::Gemini => {
                 let url = format!(
@@ -661,6 +749,11 @@ pub async fn stream_chat_completion(
                         .unwrap_or_else(|_| "Unknown error".to_string());
                     return Err(format!("Gemini API error ({}): {}", status, err_text));
                 }
+
+                let start_time = std::time::Instant::now();
+                let mut first_token_time = None;
+                let mut token_count = 0;
+                let mut stop_reason = None;
 
                 let mut stream = response.bytes_stream();
                 let mut buffer = Vec::new();
@@ -695,10 +788,17 @@ pub async fn stream_chat_completion(
                         if let Ok(chunk) = serde_json::from_str::<GeminiStreamChunk>(chunk_text) {
                             if let Some(candidates) = chunk.candidates {
                                 if let Some(candidate) = candidates.first() {
+                                    if let Some(reason) = &candidate.finish_reason {
+                                        stop_reason = Some(reason.clone());
+                                    }
                                     if let Some(content) = &candidate.content {
                                         if let Some(parts) = &content.parts {
                                             if let Some(part) = parts.first() {
                                                 if let Some(text) = &part.text {
+                                                    if first_token_time.is_none() {
+                                                        first_token_time = Some(start_time.elapsed());
+                                                    }
+                                                    token_count += 1;
                                                     window
                                                         .emit(
                                                             "chat-stream-chunk",
@@ -707,6 +807,10 @@ pub async fn stream_chat_completion(
                                                                 text: text.clone(),
                                                                 done: false,
                                                                 error: None,
+                                                                ttft_ms: None,
+                                                                tokens_per_sec: None,
+                                                                total_tokens: None,
+                                                                stop_reason: None,
                                                             },
                                                         )
                                                         .map_err(|e| e.to_string())?;
@@ -719,24 +823,34 @@ pub async fn stream_chat_completion(
                         }
                     }
                 }
+
+                let total_duration = start_time.elapsed();
+                let ttft_ms = first_token_time.map(|d| d.as_millis() as u64);
+                let tokens_per_sec = if total_duration.as_secs_f32() > 0.0 {
+                    token_count as f32 / total_duration.as_secs_f32()
+                } else {
+                    0.0
+                };
+
+                Ok(StreamPayload {
+                    conversation_id: conversation_id.clone(),
+                    text: "".to_string(),
+                    done: true,
+                    error: None,
+                    ttft_ms,
+                    tokens_per_sec: Some(tokens_per_sec),
+                    total_tokens: Some(token_count),
+                    stop_reason: Some(stop_reason.unwrap_or_else(|| "stop".to_string())),
+                })
             }
         }
-        Ok(())
     }
     .await;
 
     // Emit final chunk or error
     match result {
-        Ok(_) => {
-            let _ = window_clone.emit(
-                "chat-stream-chunk",
-                StreamPayload {
-                    conversation_id: conversation_id_clone,
-                    text: "".to_string(),
-                    done: true,
-                    error: None,
-                },
-            );
+        Ok(payload) => {
+            let _ = window_clone.emit("chat-stream-chunk", &payload);
             Ok(())
         }
         Err(e) => {
@@ -747,6 +861,10 @@ pub async fn stream_chat_completion(
                     text: "".to_string(),
                     done: true,
                     error: Some(e.clone()),
+                    ttft_ms: None,
+                    tokens_per_sec: None,
+                    total_tokens: None,
+                    stop_reason: None,
                 },
             );
             Err(e)
@@ -772,10 +890,17 @@ mod tests {
         // Multimodal image message
         let img_msg = ChatMessage {
             role: MessageRole::User,
-            content: vec![
-                ContentPart::Text { text: "Look at this:".to_string() },
-                ContentPart::Image { mime_type: "image/png".to_string(), base64: "dGVzdA==".to_string() },
-            ],
+            versions: vec![MessageVersion {
+                content: vec![
+                    ContentPart::Text { text: "Look at this:".to_string() },
+                    ContentPart::Image { mime_type: "image/png".to_string(), base64: "dGVzdA==".to_string() },
+                ],
+                ttft_ms: None,
+                tokens_per_sec: None,
+                total_tokens: None,
+                stop_reason: None,
+            }],
+            active_version: 0,
         };
         let openai_img_msg = convert_to_openai_message(&img_msg);
         assert_eq!(openai_img_msg.role, "user");

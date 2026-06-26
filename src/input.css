@@ -86,3 +86,68 @@
               fill 300ms cubic-bezier(0.4, 0, 0.2, 1),
               stroke 300ms cubic-bezier(0.4, 0, 0.2, 1);
 }
+
+/* ── Custom themed <select> ── */
+/* Resets OS chrome and applies theme variables + an SVG chevron */
+select.themed-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: var(--color-theme-panel);
+  color: var(--color-theme-text);
+  border: 1px solid var(--color-theme-border);
+  border-radius: 0.75rem;
+  padding: 0.375rem 2.25rem 0.375rem 0.75rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  outline: none;
+  cursor: pointer;
+  /* Inline SVG chevron — colour-encodes to theme-muted (#8E8E8E for dark, #666 for light) */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%238E8E8E' stroke-width='1.5'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M6 8l4 4 4-4'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.5rem center;
+  background-size: 1.1rem 1.1rem;
+  transition: background-color 300ms cubic-bezier(0.4, 0, 0.2, 1),
+              color 300ms cubic-bezier(0.4, 0, 0.2, 1),
+              border-color 300ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+select.themed-select:hover {
+  border-color: var(--color-theme-accent);
+  background-color: var(--color-theme-bg);
+}
+
+select.themed-select:focus {
+  border-color: var(--color-theme-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-theme-accent) 20%, transparent);
+}
+
+/* Larger variant for modals/forms */
+select.themed-select-lg {
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: var(--color-theme-input);
+  color: var(--color-theme-text);
+  border: 1px solid var(--color-theme-border);
+  border-radius: 0.75rem;
+  padding: 0.625rem 2.5rem 0.625rem 0.875rem;
+  font-size: 0.875rem;
+  outline: none;
+  cursor: pointer;
+  width: 100%;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%238E8E8E' stroke-width='1.5'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M6 8l4 4 4-4'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.6rem center;
+  background-size: 1.1rem 1.1rem;
+  transition: background-color 300ms cubic-bezier(0.4, 0, 0.2, 1),
+              color 300ms cubic-bezier(0.4, 0, 0.2, 1),
+              border-color 300ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+select.themed-select-lg:hover {
+  border-color: var(--color-theme-accent);
+}
+
+select.themed-select-lg:focus {
+  border-color: var(--color-theme-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-theme-accent) 20%, transparent);
+}

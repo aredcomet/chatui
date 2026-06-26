@@ -1462,7 +1462,7 @@ pub fn App() -> impl IntoView {
                             <span class="text-xs text-theme-muted font-semibold uppercase tracking-wider select-none">"Connection:"</span>
                             <select
                                 on:change=on_connection_change
-                                class="bg-theme-panel border border-theme-border/60 rounded-xl px-3 py-1.5 text-sm font-medium text-theme-text outline-none cursor-pointer hover:border-theme-accent/50 hover:bg-theme-bg transition-all select-none theme-transition"
+                                class="themed-select select-none"
                             >
                                 {move || {
                                     let conns = connections.get();
@@ -1489,7 +1489,7 @@ pub fn App() -> impl IntoView {
                             <span class="text-xs text-theme-muted font-semibold uppercase tracking-wider select-none">"Model:"</span>
                             <select
                                 on:change=on_model_change
-                                class="bg-theme-panel border border-theme-border/60 rounded-xl px-3 py-1.5 text-sm font-medium text-theme-text outline-none cursor-pointer hover:border-theme-accent/50 hover:bg-theme-bg transition-all select-none theme-transition"
+                                class="themed-select select-none"
                             >
                                 {move || {
                                     let active_id = active_connection_id.get();
@@ -2035,19 +2035,19 @@ pub fn App() -> impl IntoView {
                 fallback=move || view! {}
             >
                 <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm animate-fade-in p-4">
-                    <div class="w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl p-6 relative overflow-hidden select-none max-h-[85vh] flex flex-col">
+                    <div class="w-full max-w-2xl bg-theme-panel border border-theme-border/60 rounded-3xl shadow-2xl p-6 relative overflow-hidden select-none max-h-[85vh] flex flex-col theme-transition">
                         // Modal Header
-                        <div class="flex justify-between items-center pb-4 border-b border-slate-800 shrink-0">
+                        <div class="flex justify-between items-center pb-4 border-b border-theme-border/60 shrink-0">
                             <div>
-                                <h3 class="text-lg font-bold text-white">"Connection Manager"</h3>
-                                <p class="text-xs text-slate-400 mt-1">"Manage your API endpoints and secure keychain credentials."</p>
+                                <h3 class="text-lg font-bold text-theme-text">"Connection Manager"</h3>
+                                <p class="text-xs text-theme-muted mt-1">"Manage your API endpoints and secure keychain credentials."</p>
                             </div>
                             <button
                                 on:click=move |_| {
                                     set_show_settings.set(false);
                                     set_show_add_connection.set(false);
                                 }
-                                class="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-slate-800 transition-all"
+                                class="text-theme-muted hover:text-theme-text p-1.5 rounded-lg hover:bg-theme-bg transition-all"
                             >
                                 <svg class="w-5.5 h-5.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
@@ -2064,10 +2064,10 @@ pub fn App() -> impl IntoView {
                                     // Connection list view
                                     <div class="space-y-4">
                                         <div class="flex justify-between items-center">
-                                            <h4 class="text-sm font-semibold text-slate-300">"Active Connections"</h4>
+                                            <h4 class="text-sm font-semibold text-theme-text">"Active Connections"</h4>
                                             <button
                                                 on:click=move |_| set_show_add_connection.set(true)
-                                                class="flex items-center gap-1.5 py-1.5 px-3 rounded-lg bg-accent-indigo hover:bg-accent-indigo_hover text-white text-xs font-semibold transition-all active:scale-[0.97]"
+                                                class="flex items-center gap-1.5 py-1.5 px-3 rounded-lg bg-theme-accent/20 hover:bg-theme-accent/30 border border-theme-accent/40 text-theme-text text-xs font-semibold transition-all active:scale-[0.97]"
                                             >
                                                 <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
@@ -2080,7 +2080,7 @@ pub fn App() -> impl IntoView {
                                             let conns = connections.get();
                                             if conns.is_empty() {
                                                 view! {
-                                                    <div class="flex flex-col items-center justify-center p-8 rounded-2xl border border-dashed border-slate-800 text-slate-500">
+                                                    <div class="flex flex-col items-center justify-center p-8 rounded-2xl border border-dashed border-theme-border text-theme-muted">
                                                         <p class="text-sm">"No API connections configured yet."</p>
                                                         <p class="text-xs mt-1">"Click 'Add Connection' to configure OpenAI, Gemini, Claude, or OpenRouter."</p>
                                                     </div>
@@ -2096,18 +2096,18 @@ pub fn App() -> impl IntoView {
                                                             let enabled_count = conn.enabled_models.len();
 
                                                             view! {
-                                                                <div class="p-4 bg-slate-950/40 border border-slate-850 rounded-2xl flex items-center justify-between group hover:border-slate-700 transition-all">
+                                                                <div class="p-4 bg-theme-bg/40 border border-theme-border/60 rounded-2xl flex items-center justify-between group hover:border-theme-accent/40 transition-all">
                                                                     <div class="min-w-0 pr-2">
                                                                         <div class="flex items-center gap-2">
-                                                                            <span class="text-sm font-bold text-white truncate">{name}</span>
-                                                                            <span class="text-[9px] font-semibold bg-slate-800 text-indigo-300 py-0.5 px-1.5 rounded-full">{provider_name}</span>
+                                                                            <span class="text-sm font-bold text-theme-text truncate">{name}</span>
+                                                                            <span class="text-[9px] font-semibold bg-theme-border/80 text-theme-accent py-0.5 px-1.5 rounded-full">{provider_name}</span>
                                                                         </div>
-                                                                        <p class="text-xs text-slate-400 mt-1 truncate">"Default: " <span class="font-mono text-slate-300">{default_model}</span></p>
-                                                                        <p class="text-[10px] text-slate-500 mt-0.5">{enabled_count} " models configured"</p>
+                                                                        <p class="text-xs text-theme-muted mt-1 truncate">"Default: " <span class="font-mono text-theme-text/80">{default_model}</span></p>
+                                                                        <p class="text-[10px] text-theme-muted/60 mt-0.5">{enabled_count} " models configured"</p>
                                                                     </div>
                                                                     <button
                                                                         on:click=move |_| delete_connection_click(id.clone())
-                                                                        class="p-2 rounded-xl text-slate-500 hover:text-red-400 hover:bg-slate-900 transition-all shrink-0"
+                                                                        class="p-2 rounded-xl text-theme-muted hover:text-red-400 hover:bg-theme-bg transition-all shrink-0"
                                                                     >
                                                                         <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
@@ -2123,14 +2123,14 @@ pub fn App() -> impl IntoView {
                                     </div>
                                 }.into_any()
                             >
-                                <div class="p-5 bg-slate-950/30 border border-slate-850 rounded-2xl space-y-4">
-                                    <h4 class="text-sm font-bold text-white">"Configure Connection"</h4>
+                                <div class="p-5 bg-theme-bg/40 border border-theme-border/60 rounded-2xl space-y-4">
+                                    <h4 class="text-sm font-bold text-theme-text">"Configure Connection"</h4>
 
                                     // Fields Grid
                                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                                         // Provider Selector
                                         <div class="space-y-1.5">
-                                            <label class="text-xs font-semibold text-slate-400">"Provider"</label>
+                                            <label class="text-xs font-semibold text-theme-muted">"Provider"</label>
                                             <select
                                                 on:change=move |ev| {
                                                     let val = event_target_value(&ev);
@@ -2146,7 +2146,7 @@ pub fn App() -> impl IntoView {
                                                     set_new_conn_enabled_models.set(Vec::new());
                                                     set_new_conn_default_model.set(String::new());
                                                 }
-                                                class="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-200 outline-none cursor-pointer"
+                                                class="themed-select-lg"
                                             >
                                                 <option value="OpenAI">"OpenAI"</option>
                                                 <option value="Claude">"Claude (Anthropic)"</option>
@@ -2158,25 +2158,25 @@ pub fn App() -> impl IntoView {
 
                                         // Connection Name
                                         <div class="space-y-1.5">
-                                            <label class="text-xs font-semibold text-slate-400">"Connection Name"</label>
+                                            <label class="text-xs font-semibold text-theme-muted">"Connection Name"</label>
                                             <input
                                                 type="text"
                                                 placeholder="e.g. Work OpenAI"
                                                 prop:value=move || new_conn_name.get()
                                                 on:input=move |ev| set_new_conn_name.set(event_target_value(&ev))
-                                                class="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-200 outline-none"
+                                                class="w-full bg-theme-input border border-theme-border rounded-xl px-3 py-2.5 text-sm text-theme-text outline-none focus:border-theme-accent focus:ring-1 focus:ring-theme-accent/20 placeholder-theme-muted/50 transition-all"
                                             />
                                         </div>
 
                                         // API Key
                                         <div class="space-y-1.5 col-span-1 md:col-span-2">
-                                            <label class="text-xs font-semibold text-slate-400">"API Key"</label>
+                                            <label class="text-xs font-semibold text-theme-muted">"API Key"</label>
                                             <input
                                                 type="password"
                                                 placeholder="Enter credential..."
                                                 prop:value=move || new_conn_api_key.get()
                                                 on:input=move |ev| set_new_conn_api_key.set(event_target_value(&ev))
-                                                class="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-200 outline-none font-mono"
+                                                class="w-full bg-theme-input border border-theme-border rounded-xl px-3 py-2.5 text-sm text-theme-text outline-none focus:border-theme-accent focus:ring-1 focus:ring-theme-accent/20 placeholder-theme-muted/50 font-mono transition-all"
                                             />
                                         </div>
 
@@ -2186,13 +2186,13 @@ pub fn App() -> impl IntoView {
                                             fallback=move || view! {}
                                         >
                                             <div class="space-y-1.5 col-span-1 md:col-span-2">
-                                                <label class="text-xs font-semibold text-slate-400">"Base URL"</label>
+                                                <label class="text-xs font-semibold text-theme-muted">"Base URL"</label>
                                                 <input
                                                     type="text"
                                                     placeholder={move || if new_conn_provider.get() == Provider::OpenRouter { "https://openrouter.ai/api" } else { "https://my-local-server:port" }}
                                                     prop:value=move || new_conn_base_url.get()
                                                     on:input=move |ev| set_new_conn_base_url.set(event_target_value(&ev))
-                                                    class="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-200 outline-none font-mono"
+                                                    class="w-full bg-theme-input border border-theme-border rounded-xl px-3 py-2.5 text-sm text-theme-text outline-none focus:border-theme-accent placeholder-theme-muted/50 font-mono transition-all"
                                                 />
                                             </div>
                                         </Show>
@@ -2200,14 +2200,14 @@ pub fn App() -> impl IntoView {
 
                                     // Action to Fetch models list
                                     <div class="flex items-center justify-between pt-2">
-                                        <span class="text-xs text-slate-400 leading-relaxed">
+                                        <span class="text-xs text-theme-muted leading-relaxed">
                                             "After entering credentials, fetch the list of available models to build your selector configuration."
                                         </span>
                                         <button
                                             type="button"
                                             on:click=fetch_models_click
                                             disabled=move || fetching_models_loading.get()
-                                            class="flex items-center gap-1.5 py-2 px-4 rounded-xl bg-slate-800 border border-slate-700 text-slate-200 hover:text-white transition-all hover:bg-slate-750 active:scale-[0.98] shrink-0 disabled:opacity-40"
+                                            class="flex items-center gap-1.5 py-2 px-4 rounded-xl bg-theme-bg border border-theme-border text-theme-text hover:border-theme-accent/50 transition-all active:scale-[0.98] shrink-0 disabled:opacity-40"
                                         >
                                             <Show
                                                 when=move || fetching_models_loading.get()
@@ -2240,13 +2240,13 @@ pub fn App() -> impl IntoView {
                                         when=move || !new_conn_fetched_models.get().is_empty()
                                         fallback=move || view! {}
                                     >
-                                        <div class="pt-4 border-t border-slate-800 space-y-3">
+                                        <div class="pt-4 border-t border-theme-border/60 space-y-3">
                                             <div class="flex items-center justify-between">
-                                                <h5 class="text-xs font-semibold text-slate-350 uppercase tracking-wider">"Select Enabled Models"</h5>
+                                                <h5 class="text-xs font-semibold text-theme-muted uppercase tracking-wider">"Select Enabled Models"</h5>
                                                 <div class="flex gap-2">
-                                                    <button type="button" on:click=select_all_models class="text-[10px] text-indigo-400 hover:underline">"Select All"</button>
-                                                    <span class="text-slate-700 text-[10px]">"|"</span>
-                                                    <button type="button" on:click=deselect_all_models class="text-[10px] text-indigo-400 hover:underline">"Deselect All"</button>
+                                                    <button type="button" on:click=select_all_models class="text-[10px] text-theme-accent hover:underline">"Select All"</button>
+                                                    <span class="text-theme-border text-[10px]">"|"</span>
+                                                    <button type="button" on:click=deselect_all_models class="text-[10px] text-theme-accent hover:underline">"Deselect All"</button>
                                                 </div>
                                             </div>
 
@@ -2256,11 +2256,11 @@ pub fn App() -> impl IntoView {
                                                 placeholder="Search models filter..."
                                                 prop:value=move || new_conn_search_query.get()
                                                 on:input=move |ev| set_new_conn_search_query.set(event_target_value(&ev))
-                                                class="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 outline-none placeholder-slate-600"
+                                                class="w-full bg-theme-input border border-theme-border rounded-xl px-3 py-2 text-xs text-theme-text outline-none focus:border-theme-accent placeholder-theme-muted/40 transition-all"
                                             />
 
                                             // Scrollable checklist list
-                                            <div class="h-44 overflow-y-auto border border-slate-800 rounded-xl p-2.5 bg-slate-950/20 space-y-1.5 scrollbar-thin">
+                                            <div class="h-44 overflow-y-auto border border-theme-border/60 rounded-xl p-2.5 bg-theme-bg/30 space-y-1.5 scrollbar-thin">
                                                 {move || {
                                                     let selected_list = new_conn_enabled_models.get();
                                                     filtered_fetched_models.get().into_iter().map(|model| {
@@ -2270,15 +2270,15 @@ pub fn App() -> impl IntoView {
                                                         view! {
                                                             <div
                                                                 on:click=move |_| toggle_model(m_click.clone())
-                                                                class="flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-slate-800/40 cursor-pointer text-xs"
+                                                                class="flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-theme-border/20 cursor-pointer text-xs"
                                                             >
                                                                 <input
                                                                     type="checkbox"
                                                                     prop:checked=checked
-                                                                    class="accent-accent-indigo rounded border-slate-750 cursor-pointer shrink-0"
+                                                                    class="accent-theme-accent rounded cursor-pointer shrink-0"
                                                                     on:click=move |ev| ev.prevent_default()
                                                                 />
-                                                                <span class="font-mono text-slate-250 select-none break-all">{m_clone}</span>
+                                                                <span class="font-mono text-theme-text/80 select-none break-all">{m_clone}</span>
                                                             </div>
                                                         }
                                                     }).collect::<Vec<_>>()
@@ -2291,10 +2291,10 @@ pub fn App() -> impl IntoView {
                                                 fallback=move || view! {}
                                             >
                                                 <div class="space-y-1.5 pt-2">
-                                                    <label class="text-xs font-semibold text-slate-400">"Default Model"</label>
+                                                    <label class="text-xs font-semibold text-theme-muted">"Default Model"</label>
                                                     <select
                                                         on:change=move |ev| set_new_conn_default_model.set(event_target_value(&ev))
-                                                        class="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 outline-none cursor-pointer"
+                                                        class="themed-select-lg"
                                                     >
                                                         {move || {
                                                             new_conn_enabled_models.get().into_iter().map(|m| {
@@ -2313,18 +2313,18 @@ pub fn App() -> impl IntoView {
                                     </Show>
 
                                     // Add Connection form actions
-                                    <div class="flex justify-end gap-3 pt-4 border-t border-slate-800/80">
+                                    <div class="flex justify-end gap-3 pt-4 border-t border-theme-border/60">
                                         <button
                                             type="button"
                                             on:click=move |_| set_show_add_connection.set(false)
-                                            class="py-2 px-4 rounded-xl border border-slate-800 text-slate-405 hover:bg-slate-800 hover:text-slate-200 transition-all text-xs font-semibold active:scale-[0.97]"
+                                            class="py-2 px-4 rounded-xl border border-theme-border text-theme-muted hover:bg-theme-bg hover:text-theme-text transition-all text-xs font-semibold active:scale-[0.97]"
                                         >
                                             "Back to List"
                                         </button>
                                         <button
                                             type="button"
                                             on:click=save_new_connection
-                                            class="py-2 px-4.5 rounded-xl bg-accent-indigo hover:bg-accent-indigo_hover text-white transition-all text-xs font-semibold active:scale-[0.97]"
+                                            class="py-2 px-4.5 rounded-xl bg-theme-text text-theme-bg hover:opacity-90 transition-all text-xs font-semibold active:scale-[0.97]"
                                         >
                                             "Save Connection"
                                         </button>
@@ -2334,13 +2334,13 @@ pub fn App() -> impl IntoView {
                         </div>
 
                         // Footer actions
-                        <div class="pt-4 border-t border-slate-800 shrink-0 flex justify-end">
+                        <div class="pt-4 border-t border-theme-border/60 shrink-0 flex justify-end">
                             <button
                                 on:click=move |_| {
                                     set_show_settings.set(false);
                                     set_show_add_connection.set(false);
                                 }
-                                class="py-2 px-5 rounded-xl bg-slate-800 border border-slate-700 text-slate-200 hover:text-white transition-all text-xs font-semibold active:scale-[0.97]"
+                                class="py-2 px-5 rounded-xl bg-theme-bg border border-theme-border text-theme-muted hover:text-theme-text hover:border-theme-accent/50 transition-all text-xs font-semibold active:scale-[0.97]"
                             >
                                 "Close"
                             </button>
@@ -2351,7 +2351,7 @@ pub fn App() -> impl IntoView {
 
             // Toast Notification
             <Show when=move || toast_message.get().is_some()>
-                <div class="fixed bottom-6 right-6 z-50 px-4 py-3 rounded-xl bg-slate-950 border border-slate-800 text-slate-100 text-xs font-semibold shadow-2xl flex items-center gap-2 select-none">
+                <div class="fixed bottom-6 right-6 z-50 px-4 py-3 rounded-xl bg-theme-panel border border-theme-border/80 text-theme-text text-xs font-semibold shadow-2xl flex items-center gap-2 select-none theme-transition">
                     <svg class="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
                         <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>

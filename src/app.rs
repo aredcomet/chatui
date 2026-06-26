@@ -366,6 +366,9 @@ pub fn App() -> impl IntoView {
     let (messages, set_messages) = signal(Vec::<ChatMessage>::new());
     let (input_text, set_input_text) = signal(String::new());
     let (attached_image, set_attached_image) = signal(None::<(String, String)>);
+    // Sidebar rename state
+    let (editing_convo_id, set_editing_convo_id) = signal(None::<String>);
+    let (editing_convo_title, set_editing_convo_title) = signal(String::new());
 
     // Theme state
     let (app_theme, set_app_theme) = signal(get_saved_theme());
@@ -696,6 +699,23 @@ pub fn App() -> impl IntoView {
             let args = serde_wasm_bindgen::to_value(&DeleteConversationArgs { id }).unwrap();
             invoke("delete_conversation", args).await;
         });
+    };
+
+    // Rename a conversation and persist
+    let rename_chat = move |id: String, new_title: String| {
+        if new_title.trim().is_empty() { return; }
+        let mut current_convs = conversations.get_untracked();
+        if let Some(convo) = current_convs.iter_mut().find(|c| c.id == id) {
+            convo.title = new_title.trim().to_string();
+            let convo_clone = convo.clone();
+            spawn_local(async move {
+                let args = serde_wasm_bindgen::to_value(&SaveConversationArgs { conversation: convo_clone }).unwrap();
+                invoke("save_conversation", args).await;
+            });
+        }
+        set_conversations.set(current_convs);
+        set_editing_convo_id.set(None);
+        set_editing_convo_title.set(String::new());
     };
 
     // VLM File Select
@@ -1399,34 +1419,105 @@ pub fn App() -> impl IntoView {
                         let id = convo.id.clone();
                         let title = convo.title.clone();
                         let active = current_conversation_id.get() == Some(id.clone());
+                        let is_renaming = editing_convo_id.get() == Some(id.clone());
                         let active_class = if active {
                             "bg-theme-bg text-theme-text font-semibold border-l-2 border-theme-accent"
                         } else {
                             "text-theme-muted hover:bg-theme-bg/40 hover:text-theme-text border-l-2 border-transparent"
                         };
                         let active_trash_class = if active { "text-theme-muted hover:text-red-400" } else { "text-theme-muted/70 hover:text-red-400" };
+                        let delete_btn_class = format!("p-1 rounded hover:bg-theme-bg/60 transition-all {}", active_trash_class);
+                        // Gradient fades toward the row background so text doesn't bleed into buttons
+                        let fade_to = if active { "to-theme-bg" } else { "to-theme-panel" };
+                        let fade_class = format!("absolute right-0 top-0 h-full w-8 bg-gradient-to-r from-transparent {} pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity", fade_to);
+                        // Buttons sit on a solid background matching the row bg
+                        let btns_bg = if active { "bg-theme-bg" } else { "bg-theme-panel" };
 
-                        let id_trash = id.clone();
+                        let id_trash2 = id.clone();
+                        let id_rename_btn = id.clone();
+                        let id_rename_save = id.clone();
+                        let id_rename_blur = id.clone();
+                        let title_for_input = title.clone();
 
                         view! {
                             <div
-                                on:click=move |_| select_conversation(id.clone())
+                                on:click=move |_| {
+                                    // Don't switch chat if we're in rename mode
+                                    if editing_convo_id.get_untracked().is_none() {
+                                        select_conversation(id.clone());
+                                    }
+                                }
                                 class={format!("group flex items-center justify-between px-3 py-2.5 rounded-xl cursor-pointer transition-all theme-transition {}", active_class)}
                             >
-                                <div class="flex items-center gap-2.5 min-w-0 pr-2">
-                                    <svg class="w-4 h-4 shrink-0 opacity-60" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
-                                    </svg>
-                                    <span class="text-sm truncate select-none">{title}</span>
+                                // Title or inline rename input
+                                <div class="relative flex-1 min-w-0 overflow-hidden">
+                                    <Show
+                                        when=move || is_renaming
+                                        fallback=move || view! {
+                                            <span class="text-sm truncate select-none block pr-1">{title.clone()}</span>
+                                            // Gradient fade that appears on hover to separate text from buttons
+                                            <div class=fade_class.clone()></div>
+                                        }
+                                    >
+                                        <input
+                                            type="text"
+                                            class="w-full bg-theme-input border border-theme-accent/60 rounded-md px-1.5 py-0.5 text-sm text-theme-text outline-none focus:border-theme-accent"
+                                            prop:value=move || editing_convo_title.get()
+                                            on:input=move |ev| set_editing_convo_title.set(event_target_value(&ev))
+                                            on:keydown={
+                                                let id_s = id_rename_save.clone();
+                                                move |ev: web_sys::KeyboardEvent| {
+                                                    ev.stop_propagation();
+                                                    match ev.key().as_str() {
+                                                        "Enter" => rename_chat(id_s.clone(), editing_convo_title.get_untracked()),
+                                                        "Escape" => { set_editing_convo_id.set(None); set_editing_convo_title.set(String::new()); }
+                                                        _ => {}
+                                                    }
+                                                }
+                                            }
+                                            on:blur={
+                                                let id_b = id_rename_blur.clone();
+                                                move |_| rename_chat(id_b.clone(), editing_convo_title.get_untracked())
+                                            }
+                                            on:click=move |ev: web_sys::MouseEvent| ev.stop_propagation()
+                                        />
+                                    </Show>
                                 </div>
-                                <button
-                                    on:click=move |ev| delete_chat(id_trash.clone(), ev)
-                                    class={format!("opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-theme-bg transition-all {}", active_trash_class)}
+
+                                // Action buttons — solid background so they're always legible over text
+                                <div
+                                    class=format!("flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-all shrink-0 pl-1 {}", btns_bg)
+                                    style=move || if is_renaming { "display:none" } else { "" }
                                 >
-                                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                                    </svg>
-                                </button>
+                                    // Rename button
+                                    <button
+                                        on:click={
+                                            let id_r = id_rename_btn.clone();
+                                            let t = title_for_input.clone();
+                                            move |ev: web_sys::MouseEvent| {
+                                                ev.stop_propagation();
+                                                set_editing_convo_id.set(Some(id_r.clone()));
+                                                set_editing_convo_title.set(t.clone());
+                                            }
+                                        }
+                                        class="p-1 rounded hover:bg-theme-bg text-theme-muted/70 hover:text-theme-muted transition-all"
+                                        title="Rename chat"
+                                    >
+                                        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                            <path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                        </svg>
+                                    </button>
+                                    // Delete button
+                                    <button
+                                        on:click=move |ev| delete_chat(id_trash2.clone(), ev)
+                                        class=delete_btn_class.clone()
+                                        title="Delete chat"
+                                    >
+                                        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                        </svg>
+                                    </button>
+                                </div>
                             </div>
                         }
                     }).collect::<Vec<_>>()}
@@ -1617,7 +1708,7 @@ pub fn App() -> impl IntoView {
                                                     fallback=move || {
                                                         let parts = content_parts.clone();
                                                         view! {
-                                                            <div class="space-y-3 max-w-full overflow-hidden font-sans text-sm">
+                                                            <div class="space-y-3 max-w-full overflow-hidden prose max-w-none font-serif leading-relaxed text-theme-text">
                                                                 {parts.iter().map(|part| match part {
                                                                     ContentPart::Text { text } => {
                                                                         render_message_content(text.clone()).into_any()
@@ -1670,6 +1761,56 @@ pub fn App() -> impl IntoView {
                                                     </div>
                                                 </Show>
                                             </div>
+
+                                            // User message controls: copy + edit (shown when not editing)
+                                            <Show when=move || !is_editing>
+                                                <div class="flex items-center gap-1 justify-end mt-2 select-none">
+                                                    // Copy
+                                                    <button
+                                                        type="button"
+                                                        title="Copy message"
+                                                        class="p-1.5 rounded-lg hover:bg-theme-bg hover:text-theme-text text-theme-muted transition-colors theme-transition"
+                                                        on:click={
+                                                            let text = msg.get_text();
+                                                            move |_| copy_message_text(text.clone())
+                                                        }
+                                                    >
+                                                        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                                        </svg>
+                                                    </button>
+                                                    // Edit
+                                                    <button
+                                                        type="button"
+                                                        title="Edit message"
+                                                        class="p-1.5 rounded-lg hover:bg-theme-bg hover:text-theme-text text-theme-muted transition-colors disabled:opacity-30 theme-transition"
+                                                        disabled=move || is_streaming.get()
+                                                        on:click={
+                                                            let text = msg.get_text();
+                                                            move |_| {
+                                                                set_editing_message_idx.set(Some(idx));
+                                                                set_editing_message_text.set(text.clone());
+                                                            }
+                                                        }
+                                                    >
+                                                        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                                        </svg>
+                                                    </button>
+                                                    // Delete
+                                                    <button
+                                                        type="button"
+                                                        title="Delete message"
+                                                        class="p-1.5 rounded-lg hover:bg-theme-bg hover:text-red-400 text-theme-muted transition-colors disabled:opacity-30 theme-transition"
+                                                        disabled=move || is_streaming.get()
+                                                        on:click=move |_| delete_message(idx)
+                                                    >
+                                                        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                        </svg>
+                                                    </button>
+                                                </div>
+                                            </Show>
                                         </div>
                                     </div>
                                 }.into_any()

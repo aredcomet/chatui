@@ -2,17 +2,34 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Provider {
-    OpenAi,
-    Anthropic,
+    OpenAI,
+    Claude,
+    Gemini,
+    OpenRouter,
+    CustomOpenAICompliant,
 }
 
 impl Provider {
     pub fn to_string(&self) -> String {
         match self {
-            Provider::OpenAi => "OpenAI".to_string(),
-            Provider::Anthropic => "Anthropic".to_string(),
+            Provider::OpenAI => "OpenAI".to_string(),
+            Provider::Claude => "Claude (Anthropic)".to_string(),
+            Provider::Gemini => "Google Gemini".to_string(),
+            Provider::OpenRouter => "OpenRouter".to_string(),
+            Provider::CustomOpenAICompliant => "Custom OpenAI-Compliant".to_string(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Connection {
+    pub id: String,                  // Unique UUID
+    pub name: String,                // User-defined name
+    pub provider: Provider,
+    pub api_key: String,             // API Key (stored securely)
+    pub base_url: Option<String>,    // Custom Base URL
+    pub enabled_models: Vec<String>, // Checked model names
+    pub default_model: String,       // Default model name
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -70,6 +87,7 @@ pub struct ApiConfig {
     pub model: String,
     pub temperature: f32,
     pub max_tokens: Option<u32>,
+    pub connection_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

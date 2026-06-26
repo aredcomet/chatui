@@ -2,37 +2,53 @@ use leptos::task::spawn_local;
 use leptos::{ev::SubmitEvent, prelude::*};
 use serde::Serialize;
 use shared::{
-    ApiConfig, ChatConversation, ChatMessage, ContentPart, MessageRole, Provider, StreamPayload,
+    ApiConfig, ChatConversation, ChatMessage, Connection, ContentPart, MessageRole, Provider,
+    StreamPayload,
 };
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
 extern "C" {
-    #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "core"])]
-    async fn invoke(cmd: &str, args: JsValue) -> JsValue;
+    #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "core"], js_name = invoke)]
+    fn invoke_raw(cmd: &str, args: JsValue) -> js_sys::Promise;
 
     #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "event"])]
     async fn listen(event: &str, handler: &js_sys::Function) -> JsValue;
 }
 
+// Helper function to call Tauri commands safely and catch exceptions without panicking Wasm
+async fn invoke(cmd: &str, args: JsValue) -> JsValue {
+    let promise = invoke_raw(cmd, args);
+    match wasm_bindgen_futures::JsFuture::from(promise).await {
+        Ok(val) => val,
+        Err(err) => {
+            web_sys::console::error_1(&err);
+            JsValue::NULL
+        }
+    }
+}
+
 // Arguments for Tauri commands
 #[derive(Serialize)]
-struct GetKeyArgs {
+#[serde(rename_all = "camelCase")]
+struct FetchModelsArgs {
     provider: Provider,
+    api_key: String,
+    base_url: Option<String>,
 }
 
 #[derive(Serialize)]
-struct SetKeyArgs {
-    provider: Provider,
-    key: String,
+struct SaveConnectionsArgs {
+    connections: Vec<Connection>,
 }
 
 #[derive(Serialize)]
-struct DeleteKeyArgs {
-    provider: Provider,
+struct DeleteConnectionArgs {
+    id: String,
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SendMessageStreamArgs {
     conversation_id: String,
     config: ApiConfig,
@@ -59,7 +75,6 @@ fn read_file_as_data_url(file: &web_sys::File) -> Result<js_sys::Promise, JsValu
                 let _ = resolve.call1(&JsValue::UNDEFINED, &result);
             }
         }) as Box<dyn FnMut(web_sys::Event)>);
-
 
         let onerror = Closure::wrap(Box::new(move |_: web_sys::Event| {
             let _ = reject.call1(&JsValue::UNDEFINED, &JsValue::from_str("Error reading file"));
@@ -148,28 +163,57 @@ fn render_message_content(text: String) -> impl IntoView {
 
 #[component]
 pub fn App() -> impl IntoView {
-    // Core state signals
+    // Conversations state
     let (conversations, set_conversations) = signal(Vec::<ChatConversation>::new());
     let (current_conversation_id, set_current_conversation_id) = signal(None::<String>);
     let (messages, set_messages) = signal(Vec::<ChatMessage>::new());
     let (input_text, set_input_text) = signal(String::new());
-    let (attached_image, set_attached_image) = signal(None::<(String, String)>); // (mime, base64)
+    let (attached_image, set_attached_image) = signal(None::<(String, String)>);
+
+    // Connections manager state
+    let (connections, set_connections) = signal(Vec::<Connection>::new());
+    let (active_connection_id, set_active_connection_id) = signal(None::<String>);
+
+    // Chat configuration state
+    let (selected_provider, set_selected_provider) = signal(Provider::OpenAI);
+    let (selected_model, set_selected_model) = signal("gpt-4o-mini".to_string());
+    let (temperature, set_temperature) = signal(0.7f32);
+
+    // Modal settings control
+    let (show_settings, set_show_settings) = signal(false);
+    let (show_add_connection, set_show_add_connection) = signal(false);
+
+    // Add Connection Form state
+    let (new_conn_provider, set_new_conn_provider) = signal(Provider::OpenAI);
+    let (new_conn_name, set_new_conn_name) = signal(String::new());
+    let (new_conn_api_key, set_new_conn_api_key) = signal(String::new());
+    let (new_conn_base_url, set_new_conn_base_url) = signal(String::new());
+    let (new_conn_fetched_models, set_new_conn_fetched_models) = signal(Vec::<String>::new());
+    let (new_conn_search_query, set_new_conn_search_query) = signal(String::new());
+    let (new_conn_enabled_models, set_new_conn_enabled_models) = signal(Vec::<String>::new());
+    let (new_conn_default_model, set_new_conn_default_model) = signal(String::new());
+
+    // Fetch models loading & errors
+    let (fetching_models_loading, set_fetching_models_loading) = signal(false);
+    let (fetching_models_error, set_fetching_models_error) = signal(None::<String>);
 
     // Streaming state
     let (is_streaming, set_is_streaming) = signal(false);
     let (stream_chunks, set_stream_chunks) = signal(None::<StreamPayload>);
 
-    // Config settings
-    let (selected_provider, set_selected_provider) = signal(Provider::OpenAi);
-    let (selected_model, set_selected_model) = signal("gpt-4o-mini".to_string());
-    let (temperature, set_temperature) = signal(0.7f32);
-
-    // Modal control
-    let (show_settings, set_show_settings) = signal(false);
-    let (openai_configured, set_openai_configured) = signal(false);
-    let (anthropic_configured, set_anthropic_configured) = signal(false);
-    let (openai_input, set_openai_input) = signal(String::new());
-    let (anthropic_input, set_anthropic_input) = signal(String::new());
+    // Memoized filtered models checklist
+    let filtered_fetched_models = Memo::new(move |_| {
+        let query = new_conn_search_query.get().to_lowercase();
+        let models = new_conn_fetched_models.get();
+        if query.is_empty() {
+            models
+        } else {
+            models
+                .into_iter()
+                .filter(|m| m.to_lowercase().contains(&query))
+                .collect()
+        }
+    });
 
     // Scroll helper
     let scroll_chat_to_bottom = move || {
@@ -182,57 +226,36 @@ pub fn App() -> impl IntoView {
         }
     };
 
-    // 1. Listen for stream events on mount
-    let _ = Closure::wrap(Box::new(move |event_obj: JsValue| {
-        if let Ok(payload) = js_sys::Reflect::get(&event_obj, &JsValue::from_str("payload")) {
-            if let Ok(payload_struct) = serde_wasm_bindgen::from_value::<StreamPayload>(payload) {
-                set_stream_chunks.set(Some(payload_struct));
-            }
-        }
-    }) as Box<dyn Fn(JsValue)>);
-
-    // Mount logic: fetch credentials status and conversations
+    // Load initial configurations from backend
     let load_init_data = move || {
         spawn_local(async move {
-            // Load conversations from backend
+            // Fetch conversations
             let args = serde_wasm_bindgen::to_value(&()).unwrap();
-            let result_js = invoke("load_conversations", args).await;
+            let res_convs = invoke("load_conversations", args).await;
             if let Ok(convs) =
-                serde_wasm_bindgen::from_value::<Vec<ChatConversation>>(result_js)
+                serde_wasm_bindgen::from_value::<Vec<ChatConversation>>(res_convs)
             {
                 set_conversations.set(convs);
             }
 
-            // Check keys status
-            let oa_args = serde_wasm_bindgen::to_value(&GetKeyArgs {
-                provider: Provider::OpenAi,
-            })
-            .unwrap();
-            let oa_res = invoke("get_api_key", oa_args).await;
-            if let Ok(Some(key)) = serde_wasm_bindgen::from_value::<Option<String>>(oa_res) {
-                if !key.is_empty() {
-                    set_openai_configured.set(true);
-                }
-            }
-
-            let ant_args = serde_wasm_bindgen::to_value(&GetKeyArgs {
-                provider: Provider::Anthropic,
-            })
-            .unwrap();
-            let ant_res = invoke("get_api_key", ant_args).await;
-            if let Ok(Some(key)) = serde_wasm_bindgen::from_value::<Option<String>>(ant_res) {
-                if !key.is_empty() {
-                    set_anthropic_configured.set(true);
+            // Fetch saved connections
+            let res_conns = invoke("load_connections", serde_wasm_bindgen::to_value(&()).unwrap()).await;
+            if let Ok(conns) = serde_wasm_bindgen::from_value::<Vec<Connection>>(res_conns) {
+                set_connections.set(conns.clone());
+                if !conns.is_empty() {
+                    let first_id = conns[0].id.clone();
+                    set_active_connection_id.set(Some(first_id.clone()));
+                    set_selected_provider.set(conns[0].provider);
+                    set_selected_model.set(conns[0].default_model.clone());
                 }
             }
         });
     };
 
-    // Trigger initial load
+    // Effects for mounting and listening
     Effect::new(move |_| {
         load_init_data();
 
-        // Bind streaming listener
         let handler = Closure::wrap(Box::new(move |event_obj: JsValue| {
             if let Ok(payload) = js_sys::Reflect::get(&event_obj, &JsValue::from_str("payload")) {
                 if let Ok(payload_struct) =
@@ -249,7 +272,7 @@ pub fn App() -> impl IntoView {
         });
     });
 
-    // 2. Stream chunk processor effect
+    // Streaming chunk listener
     Effect::new(move |_| {
         if let Some(payload) = stream_chunks.get() {
             let current_id = current_conversation_id.get_untracked();
@@ -258,7 +281,6 @@ pub fn App() -> impl IntoView {
 
                 if payload.done {
                     set_is_streaming.set(false);
-                    // Update chat list conversation messages and save
                     if let Some(convo_id) = current_id {
                         let mut convos = conversations.get_untracked();
                         if let Some(convo) = convos.iter_mut().find(|c| c.id == convo_id) {
@@ -282,11 +304,10 @@ pub fn App() -> impl IntoView {
                     set_is_streaming.set(false);
                     current_msgs.push(ChatMessage::new_text(
                         MessageRole::Assistant,
-                        format!("⚠️ API Error: {}", err_msg),
+                        format!("⚠️ Error: {}", err_msg),
                     ));
                     set_messages.set(current_msgs);
                 } else {
-                    // Stream token chunk
                     if let Some(last_msg) = current_msgs.last_mut() {
                         if last_msg.role == MessageRole::Assistant {
                             if let Some(ContentPart::Text {
@@ -314,15 +335,22 @@ pub fn App() -> impl IntoView {
         }
     });
 
-    // 3. Selection handler when model selection changes
-    let on_provider_change = move |ev| {
-        let prov_str = event_target_value(&ev);
-        if prov_str == "OpenAI" {
-            set_selected_provider.set(Provider::OpenAi);
-            set_selected_model.set("gpt-4o-mini".to_string());
-        } else {
-            set_selected_provider.set(Provider::Anthropic);
-            set_selected_model.set("claude-3-5-sonnet-20241022".to_string());
+    // Handle Active Connection dropdown change
+    let on_connection_change = move |ev| {
+        let id_str = event_target_value(&ev);
+        if id_str.is_empty() {
+            set_active_connection_id.set(None);
+            return;
+        }
+        set_active_connection_id.set(Some(id_str.clone()));
+
+        if let Some(conn) = connections
+            .get_untracked()
+            .iter()
+            .find(|c| c.id == id_str)
+        {
+            set_selected_provider.set(conn.provider);
+            set_selected_model.set(conn.default_model.clone());
         }
     };
 
@@ -330,12 +358,11 @@ pub fn App() -> impl IntoView {
         set_selected_model.set(event_target_value(&ev));
     };
 
-    // 4. Handle text inputs
     let update_input = move |ev| {
         set_input_text.set(event_target_value(&ev));
     };
 
-    // 5. Select conversation from list
+    // Chat navigation functions
     let select_conversation = move |id: String| {
         if is_streaming.get_untracked() {
             return;
@@ -349,14 +376,12 @@ pub fn App() -> impl IntoView {
             set_messages.set(convo.messages.clone());
             set_selected_provider.set(convo.provider);
             set_selected_model.set(convo.model.clone());
-            // Delay scroll slightly to allow rendering
             spawn_local(async move {
                 scroll_chat_to_bottom();
             });
         }
     };
 
-    // 6. Create new conversation
     let create_new_chat = move |_| {
         if is_streaming.get_untracked() {
             return;
@@ -390,7 +415,6 @@ pub fn App() -> impl IntoView {
         });
     };
 
-    // 7. Delete conversation
     let delete_chat = move |id: String, ev: web_sys::MouseEvent| {
         ev.stop_propagation();
         if is_streaming.get_untracked() {
@@ -412,7 +436,7 @@ pub fn App() -> impl IntoView {
         });
     };
 
-    // 8. Upload files/images
+    // VLM File Select
     let on_file_change = move |ev: web_sys::Event| {
         let target = ev
             .target()
@@ -445,6 +469,7 @@ pub fn App() -> impl IntoView {
         }
     };
 
+    // Drag and Drop
     let handle_drag_over = move |ev: web_sys::DragEvent| {
         ev.prevent_default();
     };
@@ -480,7 +505,7 @@ pub fn App() -> impl IntoView {
         }
     };
 
-    // 9. Send active message
+    // Send Message
     let send_message = move |ev: SubmitEvent| {
         ev.prevent_default();
         if is_streaming.get_untracked() {
@@ -494,7 +519,6 @@ pub fn App() -> impl IntoView {
             return;
         }
 
-        // 9a. Check or auto-create conversation
         let active_id = match current_conversation_id.get_untracked() {
             Some(id) => id,
             None => {
@@ -527,7 +551,6 @@ pub fn App() -> impl IntoView {
             }
         };
 
-        // 9b. Construct the message content parts
         let mut parts = Vec::new();
         if !text.is_empty() {
             parts.push(ContentPart::Text { text: text.clone() });
@@ -548,21 +571,21 @@ pub fn App() -> impl IntoView {
         active_msgs.push(new_user_msg);
         set_messages.set(active_msgs.clone());
 
-        // Reset input fields
         set_input_text.set(String::new());
         set_attached_image.set(None);
         set_is_streaming.set(true);
 
-        // 9c. Call stream completions endpoint
         let provider = selected_provider.get_untracked();
         let model = selected_model.get_untracked();
         let temp = temperature.get_untracked();
+        let conn_id = active_connection_id.get_untracked();
 
         let api_config = ApiConfig {
             provider,
             model,
             temperature: temp,
             max_tokens: None,
+            connection_id: conn_id,
         };
 
         let messages_c = active_msgs.clone();
@@ -574,9 +597,9 @@ pub fn App() -> impl IntoView {
             })
             .unwrap();
 
-            let invoke_res = invoke("send_message_stream", args).await;
+            let promise = invoke_raw("send_message_stream", args);
+            let invoke_res = wasm_bindgen_futures::JsFuture::from(promise).await;
 
-            // Update chat details title based on first query
             let mut convos = conversations.get_untracked();
             if let Some(convo) = convos.iter_mut().find(|c| c.id == active_id) {
                 convo.messages = active_msgs.clone();
@@ -591,14 +614,19 @@ pub fn App() -> impl IntoView {
                 }
 
                 let convo_clone = convo.clone();
-                invoke("save_conversation", serde_wasm_bindgen::to_value(&SaveConversationArgs {
-                    conversation: convo_clone
-                }).unwrap()).await;
+                let save_promise = invoke_raw(
+                    "save_conversation",
+                    serde_wasm_bindgen::to_value(&SaveConversationArgs {
+                        conversation: convo_clone,
+                    })
+                    .unwrap(),
+                );
+                let _ = wasm_bindgen_futures::JsFuture::from(save_promise).await;
             }
             set_conversations.set(convos);
 
-            // Handle pre-stream connection error
-            if let Some(err_str) = invoke_res.as_string() {
+            if let Err(err) = invoke_res {
+                let err_str = err.as_string().unwrap_or_else(|| "Unknown connection error".to_string());
                 set_is_streaming.set(false);
                 let mut current_msgs = messages.get_untracked();
                 current_msgs.push(ChatMessage::new_text(
@@ -614,46 +642,191 @@ pub fn App() -> impl IntoView {
         });
     };
 
-    // 10. API keys configuration saving
-    let save_settings = move |_| {
-        let op_key = openai_input.get_untracked();
-        let ant_key = anthropic_input.get_untracked();
+    // Connection manager triggers
+    let fetch_models_click = move |_| {
+        let provider = new_conn_provider.get_untracked();
+        let api_key = new_conn_api_key.get_untracked().trim().to_string();
+        let base_url_str = new_conn_base_url.get_untracked().trim().to_string();
+
+        if api_key.is_empty() {
+            set_fetching_models_error.set(Some("API key is required to fetch models".to_string()));
+            return;
+        }
+
+        let base_url = if provider == Provider::CustomOpenAICompliant
+            || provider == Provider::OpenRouter
+        {
+            if base_url_str.is_empty() {
+                None
+            } else {
+                Some(base_url_str)
+            }
+        } else {
+            None
+        };
+
+        set_fetching_models_loading.set(true);
+        set_fetching_models_error.set(None);
 
         spawn_local(async move {
-            if !op_key.is_empty() {
-                let args = serde_wasm_bindgen::to_value(&SetKeyArgs {
-                    provider: Provider::OpenAi,
-                    key: op_key,
-                })
-                .unwrap();
-                invoke("set_api_key", args).await;
-                set_openai_configured.set(true);
-            }
+            let args = serde_wasm_bindgen::to_value(&FetchModelsArgs {
+                provider,
+                api_key,
+                base_url,
+            })
+            .unwrap();
 
-            if !ant_key.is_empty() {
-                let args = serde_wasm_bindgen::to_value(&SetKeyArgs {
-                    provider: Provider::Anthropic,
-                    key: ant_key,
-                })
-                .unwrap();
-                invoke("set_api_key", args).await;
-                set_anthropic_configured.set(true);
-            }
+            let promise = invoke_raw("fetch_models", args);
+            let invoke_res = wasm_bindgen_futures::JsFuture::from(promise).await;
+            set_fetching_models_loading.set(false);
 
-            set_openai_input.set(String::new());
-            set_anthropic_input.set(String::new());
-            set_show_settings.set(false);
+            match invoke_res {
+                Ok(val) => {
+                    match serde_wasm_bindgen::from_value::<Vec<String>>(val) {
+                        Ok(models) => {
+                            if models.is_empty() {
+                                set_fetching_models_error
+                                    .set(Some("No models returned by this endpoint".to_string()));
+                            } else {
+                                set_new_conn_fetched_models.set(models);
+                            }
+                        }
+                        Err(e) => {
+                            set_fetching_models_error
+                                .set(Some(format!("Tauri mapping failure: {:?}", e)));
+                        }
+                    }
+                }
+                Err(err) => {
+                    let err_str = err.as_string().unwrap_or_else(|| "Unknown error".to_string());
+                    set_fetching_models_error.set(Some(err_str));
+                }
+            }
         });
     };
 
-    let delete_key_click = move |provider: Provider| {
-        spawn_local(async move {
-            let args = serde_wasm_bindgen::to_value(&DeleteKeyArgs { provider }).unwrap();
-            invoke("delete_api_key", args).await;
-            match provider {
-                Provider::OpenAi => set_openai_configured.set(false),
-                Provider::Anthropic => set_anthropic_configured.set(false),
+    let toggle_model = move |model: String| {
+        let mut selected = new_conn_enabled_models.get_untracked();
+        if let Some(pos) = selected.iter().position(|m| m == &model) {
+            selected.remove(pos);
+        } else {
+            selected.push(model.clone());
+            let current_default = new_conn_default_model.get_untracked();
+            if current_default.is_empty() {
+                set_new_conn_default_model.set(model);
             }
+        }
+        set_new_conn_enabled_models.set(selected);
+    };
+
+    let select_all_models = move |_| {
+        let models = new_conn_fetched_models.get_untracked();
+        set_new_conn_enabled_models.set(models.clone());
+        if !models.is_empty() {
+            set_new_conn_default_model.set(models[0].clone());
+        }
+    };
+
+    let deselect_all_models = move |_| {
+        set_new_conn_enabled_models.set(Vec::new());
+        set_new_conn_default_model.set(String::new());
+    };
+
+    let save_new_connection = move |_| {
+        let name = new_conn_name.get_untracked().trim().to_string();
+        let provider = new_conn_provider.get_untracked();
+        let api_key = new_conn_api_key.get_untracked().trim().to_string();
+        let base_url_str = new_conn_base_url.get_untracked().trim().to_string();
+        let enabled_models = new_conn_enabled_models.get_untracked();
+        let default_model = new_conn_default_model.get_untracked();
+
+        if name.is_empty() {
+            set_fetching_models_error.set(Some("Connection name is required".to_string()));
+            return;
+        }
+        if api_key.is_empty() {
+            set_fetching_models_error.set(Some("API Key is required".to_string()));
+            return;
+        }
+        if enabled_models.is_empty() {
+            set_fetching_models_error.set(Some("Please enable at least one model".to_string()));
+            return;
+        }
+        if default_model.is_empty() {
+            set_fetching_models_error.set(Some("Please set a default model".to_string()));
+            return;
+        }
+
+        let base_url = if provider == Provider::CustomOpenAICompliant
+            || provider == Provider::OpenRouter
+        {
+            if base_url_str.is_empty() {
+                None
+            } else {
+                Some(base_url_str)
+            }
+        } else {
+            None
+        };
+
+        let conn = Connection {
+            id: uuid::Uuid::new_v4().to_string(),
+            name,
+            provider,
+            api_key,
+            base_url,
+            enabled_models,
+            default_model,
+        };
+
+        let mut current_conns = connections.get_untracked();
+        current_conns.push(conn.clone());
+        set_connections.set(current_conns.clone());
+
+        // Select the newly added connection as active
+        set_active_connection_id.set(Some(conn.id.clone()));
+        set_selected_provider.set(conn.provider);
+        set_selected_model.set(conn.default_model.clone());
+
+        // Reset Add connection state
+        set_show_add_connection.set(false);
+        set_new_conn_name.set(String::new());
+        set_new_conn_api_key.set(String::new());
+        set_new_conn_base_url.set(String::new());
+        set_new_conn_fetched_models.set(Vec::new());
+        set_new_conn_search_query.set(String::new());
+        set_new_conn_enabled_models.set(Vec::new());
+        set_new_conn_default_model.set(String::new());
+
+        spawn_local(async move {
+            let args = serde_wasm_bindgen::to_value(&SaveConnectionsArgs {
+                connections: current_conns,
+            })
+            .unwrap();
+            invoke("save_connections", args).await;
+        });
+    };
+
+    let delete_connection_click = move |id: String| {
+        let mut current_conns = connections.get_untracked();
+        current_conns.retain(|c| c.id != id);
+        set_connections.set(current_conns.clone());
+
+        let active_id = active_connection_id.get_untracked();
+        if active_id == Some(id.clone()) {
+            if !current_conns.is_empty() {
+                let first_id = current_conns[0].id.clone();
+                set_active_connection_id.set(Some(first_id.clone()));
+                set_selected_provider.set(current_conns[0].provider);
+                set_selected_model.set(current_conns[0].default_model.clone());
+            } else {
+                set_active_connection_id.set(None);
+            }
+        }
+
+        spawn_local(async move {
+            let args = serde_wasm_bindgen::to_value(&DeleteConnectionArgs { id }).unwrap();
+            invoke("delete_connection", args).await;
         });
     };
 
@@ -692,7 +865,6 @@ pub fn App() -> impl IntoView {
                         };
                         let active_trash_class = if active { "text-slate-400 hover:text-red-400" } else { "text-slate-500 hover:text-red-400" };
 
-
                         let id_trash = id.clone();
 
                         view! {
@@ -719,7 +891,7 @@ pub fn App() -> impl IntoView {
                     }).collect::<Vec<_>>()}
                 </div>
 
-                // Sidebar Footer (Settings Trigger)
+                // Sidebar Footer (Connections settings trigger)
                 <div class="p-4 border-t border-slate-800/80 bg-slate-950/40">
                     <button
                         on:click=move |_| set_show_settings.set(true)
@@ -730,12 +902,11 @@ pub fn App() -> impl IntoView {
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
                             </svg>
-                            <span class="text-sm font-medium">"Settings"</span>
+                            <span class="text-sm font-medium">"Connections & Keys"</span>
                         </div>
-                        <div class="flex gap-1">
-                            <span class={format!("w-2 h-2 rounded-full {}", if openai_configured.get() { "bg-emerald-500" } else { "bg-amber-500" })}></span>
-                            <span class={format!("w-2 h-2 rounded-full {}", if anthropic_configured.get() { "bg-emerald-500" } else { "bg-amber-500" })}></span>
-                        </div>
+                        <span class="bg-indigo-900/60 border border-indigo-700/60 text-indigo-300 font-mono text-[10px] py-0.5 px-2 rounded-full">
+                            {move || connections.get().len()}
+                        </span>
                     </button>
                 </div>
             </aside>
@@ -745,39 +916,57 @@ pub fn App() -> impl IntoView {
                 // Chat Header
                 <header class="flex items-center justify-between h-16 border-b border-slate-800/80 px-6 shrink-0 bg-bg-dark bg-opacity-70 backdrop-blur-md">
                     <div class="flex items-center gap-4">
-                        // Provider selector
-                        <div class="relative">
+                        // Active Connection Selector
+                        <div class="flex items-center gap-2">
+                            <span class="text-xs text-slate-400 font-semibold uppercase tracking-wider select-none">"Connection:"</span>
                             <select
-                                on:change=on_provider_change
+                                on:change=on_connection_change
                                 class="bg-slate-800 border border-slate-700/60 rounded-xl px-3 py-1.5 text-sm font-medium text-slate-200 outline-none cursor-pointer hover:border-slate-650 transition-all select-none"
                             >
-                                <option value="OpenAI" selected={move || selected_provider.get() == Provider::OpenAi}>"OpenAI"</option>
-                                <option value="Anthropic" selected={move || selected_provider.get() == Provider::Anthropic}>"Anthropic"</option>
+                                {move || {
+                                    let conns = connections.get();
+                                    if conns.is_empty() {
+                                        view! {
+                                            <option value="">"No active connections"</option>
+                                        }.into_any()
+                                    } else {
+                                        conns.into_iter().map(|c| {
+                                            let id_val = c.id.clone();
+                                            let id_clone = c.id.clone();
+                                            let name = c.name.clone();
+                                            view! {
+                                                <option value=id_val selected={move || active_connection_id.get() == Some(id_clone.clone())}>{name}</option>
+                                            }
+                                        }).collect::<Vec<_>>().into_any()
+                                    }
+                                }}
                             </select>
                         </div>
 
-                        // Model selector
-                        <div class="relative">
+                        // Model selector (Filtered based on active connection enabled models)
+                        <div class="flex items-center gap-2">
+                            <span class="text-xs text-slate-400 font-semibold uppercase tracking-wider select-none">"Model:"</span>
                             <select
                                 on:change=on_model_change
                                 class="bg-slate-800 border border-slate-700/60 rounded-xl px-3 py-1.5 text-sm font-medium text-slate-200 outline-none cursor-pointer hover:border-slate-650 transition-all select-none"
                             >
                                 {move || {
-                                    let model_val = selected_model.get();
-                                    match selected_provider.get() {
-                                        Provider::OpenAi => {
-                                            view! {
-                                                <option value="gpt-4o-mini" selected={model_val == "gpt-4o-mini"}>"gpt-4o-mini (Fast)"</option>
-                                                <option value="gpt-4o" selected={model_val == "gpt-4o"}>"gpt-4o (Powerful & Multimodal)"</option>
-                                            }.into_any()
-                                        }
-                                        Provider::Anthropic => {
-                                            view! {
-                                                <option value="claude-3-5-sonnet-20241022" selected={model_val == "claude-3-5-sonnet-20241022"}>"Claude 3.5 Sonnet (VLM)"</option>
-                                                <option value="claude-3-5-haiku-20241022" selected={model_val == "claude-3-5-haiku-20241022"}>"Claude 3.5 Haiku (Fast)"</option>
-                                            }.into_any()
+                                    let active_id = active_connection_id.get();
+                                    if let Some(conn_id) = active_id {
+                                        if let Some(conn) = connections.get().into_iter().find(|c| c.id == conn_id) {
+                                            return conn.enabled_models.into_iter().map(|m| {
+                                                let m_val = m.clone();
+                                                let m_clone1 = m.clone();
+                                                let m_clone2 = m.clone();
+                                                view! {
+                                                    <option value=m_val selected={move || selected_model.get() == m_clone1.clone()}>{m_clone2}</option>
+                                                }
+                                            }).collect::<Vec<_>>().into_any();
                                         }
                                     }
+                                    view! {
+                                        <option value="">"Configure in Settings..."</option>
+                                    }.into_any()
                                 }}
                             </select>
                         </div>
@@ -820,7 +1009,7 @@ pub fn App() -> impl IntoView {
                                 </div>
                                 <h2 class="text-xl font-bold text-white">"Ask anything"</h2>
                                 <p class="text-sm text-slate-400 leading-relaxed">
-                                    "Select a model, write your query, or drop an image file directly into the editor below to execute multimodal VLM inference securely."
+                                    "Select a connection, write your query, or drop an image file directly into the editor below to execute multimodal VLM inference securely."
                                 </p>
                             </div>
                         }
@@ -832,12 +1021,10 @@ pub fn App() -> impl IntoView {
 
                             view! {
                                 <div class={format!("flex flex-col max-w-[85%] rounded-2xl p-4 shadow-lg shadow-black/5 {}", bg)}>
-                                    // Header metadata
                                     <div class="flex items-center gap-2 mb-2 text-xs font-semibold text-slate-400 uppercase tracking-wider select-none">
                                         {header}
                                     </div>
 
-                                    // Render Content Parts
                                     <div class="space-y-3 max-w-full overflow-hidden">
                                         {msg.content.iter().map(|part| match part {
                                             ContentPart::Text { text } => {
@@ -913,7 +1100,6 @@ pub fn App() -> impl IntoView {
 
                         // Input control
                         <div class="flex items-end gap-3">
-                            // Image Upload button trigger
                             <div class="flex shrink-0">
                                 <input
                                     type="file"
@@ -932,7 +1118,6 @@ pub fn App() -> impl IntoView {
                                 </label>
                             </div>
 
-                            // Text prompt
                             <textarea
                                 id="prompt-input-box"
                                 placeholder={move || if is_streaming.get() { "AI is generating..." } else { "Type your prompt or drag/drop an image..." }}
@@ -942,7 +1127,6 @@ pub fn App() -> impl IntoView {
                                 on:keydown=move |ev: web_sys::KeyboardEvent| {
                                     if ev.key() == "Enter" && !ev.shift_key() {
                                         ev.prevent_default();
-                                        // Dispatch a submit click to send the message
                                         if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
                                             if let Some(btn) = doc.get_element_by_id("send-btn-el") {
                                                 btn.dyn_into::<web_sys::HtmlButtonElement>().unwrap().click();
@@ -954,7 +1138,6 @@ pub fn App() -> impl IntoView {
                                 class="flex-1 min-h-[42px] max-h-48 resize-none bg-transparent border-0 py-2.5 text-sm text-slate-100 placeholder-slate-500 outline-none scrollbar-none"
                             ></textarea>
 
-                            // Send Button
                             <button
                                 type="submit"
                                 id="send-btn-el"
@@ -970,19 +1153,25 @@ pub fn App() -> impl IntoView {
                 </footer>
             </main>
 
-            // ─── SETTINGS MODAL ───
+            // ─── CONNECTIONS SETTINGS MODAL ───
             <Show
                 when=move || show_settings.get()
                 fallback=move || view! {}
             >
                 <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm animate-fade-in p-4">
-                    <div class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl p-6 relative overflow-hidden select-none">
-                        // Header
-                        <div class="flex justify-between items-center mb-6">
-                            <h3 class="text-lg font-bold text-white">"Secure Settings"</h3>
+                    <div class="w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl p-6 relative overflow-hidden select-none max-h-[85vh] flex flex-col">
+                        // Modal Header
+                        <div class="flex justify-between items-center pb-4 border-b border-slate-800 shrink-0">
+                            <div>
+                                <h3 class="text-lg font-bold text-white">"Connection Manager"</h3>
+                                <p class="text-xs text-slate-400 mt-1">"Manage your API endpoints and secure keychain credentials."</p>
+                            </div>
                             <button
-                                on:click=move |_| set_show_settings.set(false)
-                                class="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-all"
+                                on:click=move |_| {
+                                    set_show_settings.set(false);
+                                    set_show_add_connection.set(false);
+                                }
+                                class="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-slate-800 transition-all"
                             >
                                 <svg class="w-5.5 h-5.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
@@ -990,102 +1179,294 @@ pub fn App() -> impl IntoView {
                             </button>
                         </div>
 
-                        // Description
-                        <p class="text-xs text-slate-400 leading-relaxed mb-6">
-                            "API keys are stored directly inside your system's secure OS keychain (macOS Keychain, Windows Credential Manager) and never in plain text."
-                        </p>
+                        // Modal Scrollable Area
+                        <div class="flex-1 overflow-y-auto py-5 space-y-6">
+                            // Section: Add Connection Form
+                            <Show
+                                when=move || show_add_connection.get()
+                                fallback=move || view! {
+                                    // Connection list view
+                                    <div class="space-y-4">
+                                        <div class="flex justify-between items-center">
+                                            <h4 class="text-sm font-semibold text-slate-300">"Active Connections"</h4>
+                                            <button
+                                                on:click=move |_| set_show_add_connection.set(true)
+                                                class="flex items-center gap-1.5 py-1.5 px-3 rounded-lg bg-accent-indigo hover:bg-accent-indigo_hover text-white text-xs font-semibold transition-all active:scale-[0.97]"
+                                            >
+                                                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                                </svg>
+                                                "Add Connection"
+                                            </button>
+                                        </div>
 
-                        <div class="space-y-5">
-                            // OpenAI Configuration
-                            <div class="space-y-2">
-                                <div class="flex items-center justify-between text-sm font-semibold text-slate-350">
-                                    <span>"OpenAI API Key"</span>
-                                    <div class="flex items-center gap-1.5">
-                                        <Show
-                                            when=move || openai_configured.get()
-                                            fallback=move || view! {
-                                                <span class="flex items-center gap-1 text-[11px] text-amber-500 font-medium">
-                                                    <span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
-                                                    "Not configured"
-                                                </span>
+                                        {move || {
+                                            let conns = connections.get();
+                                            if conns.is_empty() {
+                                                view! {
+                                                    <div class="flex flex-col items-center justify-center p-8 rounded-2xl border border-dashed border-slate-800 text-slate-500">
+                                                        <p class="text-sm">"No API connections configured yet."</p>
+                                                        <p class="text-xs mt-1">"Click 'Add Connection' to configure OpenAI, Gemini, Claude, or OpenRouter."</p>
+                                                    </div>
+                                                }.into_any()
+                                            } else {
+                                                view! {
+                                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                                        {conns.into_iter().map(|conn| {
+                                                            let id = conn.id.clone();
+                                                            let name = conn.name.clone();
+                                                            let provider_name = conn.provider.to_string();
+                                                            let default_model = conn.default_model.clone();
+                                                            let enabled_count = conn.enabled_models.len();
+
+                                                            view! {
+                                                                <div class="p-4 bg-slate-950/40 border border-slate-850 rounded-2xl flex items-center justify-between group hover:border-slate-700 transition-all">
+                                                                    <div class="min-w-0 pr-2">
+                                                                        <div class="flex items-center gap-2">
+                                                                            <span class="text-sm font-bold text-white truncate">{name}</span>
+                                                                            <span class="text-[9px] font-semibold bg-slate-800 text-indigo-300 py-0.5 px-1.5 rounded-full">{provider_name}</span>
+                                                                        </div>
+                                                                        <p class="text-xs text-slate-400 mt-1 truncate">"Default: " <span class="font-mono text-slate-300">{default_model}</span></p>
+                                                                        <p class="text-[10px] text-slate-500 mt-0.5">{enabled_count} " models configured"</p>
+                                                                    </div>
+                                                                    <button
+                                                                        on:click=move |_| delete_connection_click(id.clone())
+                                                                        class="p-2 rounded-xl text-slate-500 hover:text-red-400 hover:bg-slate-900 transition-all shrink-0"
+                                                                    >
+                                                                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                                                        </svg>
+                                                                    </button>
+                                                                </div>
+                                                            }
+                                                        }).collect::<Vec<_>>()}
+                                                    </div>
+                                                }.into_any()
                                             }
+                                        }}
+                                    </div>
+                                }.into_any()
+                            >
+                                <div class="p-5 bg-slate-950/30 border border-slate-850 rounded-2xl space-y-4">
+                                    <h4 class="text-sm font-bold text-white">"Configure Connection"</h4>
+
+                                    // Fields Grid
+                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        // Provider Selector
+                                        <div class="space-y-1.5">
+                                            <label class="text-xs font-semibold text-slate-400">"Provider"</label>
+                                            <select
+                                                on:change=move |ev| {
+                                                    let val = event_target_value(&ev);
+                                                    let prov = match val.as_str() {
+                                                        "Claude" => Provider::Claude,
+                                                        "Gemini" => Provider::Gemini,
+                                                        "OpenRouter" => Provider::OpenRouter,
+                                                        "CustomOpenAICompliant" => Provider::CustomOpenAICompliant,
+                                                        _ => Provider::OpenAI,
+                                                    };
+                                                    set_new_conn_provider.set(prov);
+                                                    set_new_conn_fetched_models.set(Vec::new());
+                                                    set_new_conn_enabled_models.set(Vec::new());
+                                                    set_new_conn_default_model.set(String::new());
+                                                }
+                                                class="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-200 outline-none cursor-pointer"
+                                            >
+                                                <option value="OpenAI">"OpenAI"</option>
+                                                <option value="Claude">"Claude (Anthropic)"</option>
+                                                <option value="Gemini">"Google Gemini"</option>
+                                                <option value="OpenRouter">"OpenRouter"</option>
+                                                <option value="CustomOpenAICompliant">"Custom OpenAI-Compliant"</option>
+                                            </select>
+                                        </div>
+
+                                        // Connection Name
+                                        <div class="space-y-1.5">
+                                            <label class="text-xs font-semibold text-slate-400">"Connection Name"</label>
+                                            <input
+                                                type="text"
+                                                placeholder="e.g. Work OpenAI"
+                                                prop:value=move || new_conn_name.get()
+                                                on:input=move |ev| set_new_conn_name.set(event_target_value(&ev))
+                                                class="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-200 outline-none"
+                                            />
+                                        </div>
+
+                                        // API Key
+                                        <div class="space-y-1.5 col-span-1 md:col-span-2">
+                                            <label class="text-xs font-semibold text-slate-400">"API Key"</label>
+                                            <input
+                                                type="password"
+                                                placeholder="Enter credential..."
+                                                prop:value=move || new_conn_api_key.get()
+                                                on:input=move |ev| set_new_conn_api_key.set(event_target_value(&ev))
+                                                class="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-200 outline-none font-mono"
+                                            />
+                                        </div>
+
+                                        // Custom Base URL (Visible for Custom and OpenRouter)
+                                        <Show
+                                            when=move || new_conn_provider.get() == Provider::CustomOpenAICompliant || new_conn_provider.get() == Provider::OpenRouter
+                                            fallback=move || view! {}
                                         >
-                                            <div class="flex items-center gap-1.5">
-                                                <span class="flex items-center gap-1 text-[11px] text-emerald-400 font-medium">
-                                                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                                                    "Configured securely"
-                                                </span>
-                                                <button
-                                                    on:click=move |_| delete_key_click(Provider::OpenAi)
-                                                    class="text-[10px] text-red-400 hover:underline ml-1"
-                                                >
-                                                    "Remove"
-                                                </button>
+                                            <div class="space-y-1.5 col-span-1 md:col-span-2">
+                                                <label class="text-xs font-semibold text-slate-400">"Base URL"</label>
+                                                <input
+                                                    type="text"
+                                                    placeholder={move || if new_conn_provider.get() == Provider::OpenRouter { "https://openrouter.ai/api" } else { "https://my-local-server:port" }}
+                                                    prop:value=move || new_conn_base_url.get()
+                                                    on:input=move |ev| set_new_conn_base_url.set(event_target_value(&ev))
+                                                    class="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-200 outline-none font-mono"
+                                                />
                                             </div>
                                         </Show>
                                     </div>
-                                </div>
-                                <input
-                                    type="password"
-                                    placeholder="sk-proj-..."
-                                    prop:value=move || openai_input.get()
-                                    on:input=move |ev| set_openai_input.set(event_target_value(&ev))
-                                    class="w-full px-3 py-2.5 text-sm bg-slate-950 border border-slate-800 rounded-xl outline-none text-slate-200 placeholder-slate-650 focus:border-indigo-650/80 transition-all font-mono"
-                                />
-                            </div>
 
-                            // Anthropic Configuration
-                            <div class="space-y-2">
-                                <div class="flex items-center justify-between text-sm font-semibold text-slate-350">
-                                    <span>"Anthropic Claude API Key"</span>
-                                    <div class="flex items-center gap-1.5">
-                                        <Show
-                                            when=move || anthropic_configured.get()
-                                            fallback=move || view! {
-                                                <span class="flex items-center gap-1 text-[11px] text-amber-500 font-medium">
-                                                    <span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
-                                                    "Not configured"
-                                                </span>
-                                            }
+                                    // Action to Fetch models list
+                                    <div class="flex items-center justify-between pt-2">
+                                        <span class="text-xs text-slate-400 leading-relaxed">
+                                            "After entering credentials, fetch the list of available models to build your selector configuration."
+                                        </span>
+                                        <button
+                                            type="button"
+                                            on:click=fetch_models_click
+                                            disabled=move || fetching_models_loading.get()
+                                            class="flex items-center gap-1.5 py-2 px-4 rounded-xl bg-slate-800 border border-slate-700 text-slate-200 hover:text-white transition-all hover:bg-slate-750 active:scale-[0.98] shrink-0 disabled:opacity-40"
                                         >
-                                            <div class="flex items-center gap-1.5">
-                                                <span class="flex items-center gap-1 text-[11px] text-emerald-400 font-medium">
-                                                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                                                    "Configured securely"
-                                                </span>
-                                                <button
-                                                    on:click=move |_| delete_key_click(Provider::Anthropic)
-                                                    class="text-[10px] text-red-400 hover:underline ml-1"
-                                                >
-                                                    "Remove"
-                                                </button>
+                                            <Show
+                                                when=move || fetching_models_loading.get()
+                                                fallback=move || view! { "Fetch Models" }
+                                            >
+                                                <svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
+                                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                                </svg>
+                                                "Fetching..."
+                                            </Show>
+                                        </button>
+                                    </div>
+
+                                    // Fetching errors alerts
+                                    <Show
+                                        when=move || fetching_models_error.get().is_some()
+                                        fallback=move || view! {}
+                                    >
+                                        <div class="p-3 bg-red-950/40 border border-red-900/60 rounded-xl text-xs text-red-300 flex items-center gap-2">
+                                            <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                                            </svg>
+                                            <span class="break-words">{move || fetching_models_error.get().unwrap_or_default()}</span>
+                                        </div>
+                                    </Show>
+
+                                    // Checklist of models loaded
+                                    <Show
+                                        when=move || !new_conn_fetched_models.get().is_empty()
+                                        fallback=move || view! {}
+                                    >
+                                        <div class="pt-4 border-t border-slate-800 space-y-3">
+                                            <div class="flex items-center justify-between">
+                                                <h5 class="text-xs font-semibold text-slate-350 uppercase tracking-wider">"Select Enabled Models"</h5>
+                                                <div class="flex gap-2">
+                                                    <button type="button" on:click=select_all_models class="text-[10px] text-indigo-400 hover:underline">"Select All"</button>
+                                                    <span class="text-slate-700 text-[10px]">"|"</span>
+                                                    <button type="button" on:click=deselect_all_models class="text-[10px] text-indigo-400 hover:underline">"Deselect All"</button>
+                                                </div>
                                             </div>
-                                        </Show>
+
+                                            // Search Bar for models filtering
+                                            <input
+                                                type="text"
+                                                placeholder="Search models filter..."
+                                                prop:value=move || new_conn_search_query.get()
+                                                on:input=move |ev| set_new_conn_search_query.set(event_target_value(&ev))
+                                                class="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 outline-none placeholder-slate-600"
+                                            />
+
+                                            // Scrollable checklist list
+                                            <div class="h-44 overflow-y-auto border border-slate-800 rounded-xl p-2.5 bg-slate-950/20 space-y-1.5 scrollbar-thin">
+                                                {move || {
+                                                    let selected_list = new_conn_enabled_models.get();
+                                                    filtered_fetched_models.get().into_iter().map(|model| {
+                                                        let checked = selected_list.contains(&model);
+                                                        let m_clone = model.clone();
+                                                        let m_click = model.clone();
+                                                        view! {
+                                                            <div
+                                                                on:click=move |_| toggle_model(m_click.clone())
+                                                                class="flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-slate-800/40 cursor-pointer text-xs"
+                                                            >
+                                                                <input
+                                                                    type="checkbox"
+                                                                    prop:checked=checked
+                                                                    class="accent-accent-indigo rounded border-slate-750 cursor-pointer shrink-0"
+                                                                    on:click=move |ev| ev.prevent_default()
+                                                                />
+                                                                <span class="font-mono text-slate-250 select-none break-all">{m_clone}</span>
+                                                            </div>
+                                                        }
+                                                    }).collect::<Vec<_>>()
+                                                }}
+                                            </div>
+
+                                            // Default Model Selector
+                                            <Show
+                                                when=move || !new_conn_enabled_models.get().is_empty()
+                                                fallback=move || view! {}
+                                            >
+                                                <div class="space-y-1.5 pt-2">
+                                                    <label class="text-xs font-semibold text-slate-400">"Default Model"</label>
+                                                    <select
+                                                        on:change=move |ev| set_new_conn_default_model.set(event_target_value(&ev))
+                                                        class="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 outline-none cursor-pointer"
+                                                    >
+                                                        {move || {
+                                                            new_conn_enabled_models.get().into_iter().map(|m| {
+                                                                let m_val = m.clone();
+                                                                let m_clone1 = m.clone();
+                                                                let m_clone2 = m.clone();
+                                                                view! {
+                                                                    <option value=m_val selected={move || new_conn_default_model.get() == m_clone1.clone()}>{m_clone2}</option>
+                                                                }
+                                                            }).collect::<Vec<_>>()
+                                                        }}
+                                                    </select>
+                                                </div>
+                                            </Show>
+                                        </div>
+                                    </Show>
+
+                                    // Add Connection form actions
+                                    <div class="flex justify-end gap-3 pt-4 border-t border-slate-800/80">
+                                        <button
+                                            type="button"
+                                            on:click=move |_| set_show_add_connection.set(false)
+                                            class="py-2 px-4 rounded-xl border border-slate-800 text-slate-405 hover:bg-slate-800 hover:text-slate-200 transition-all text-xs font-semibold active:scale-[0.97]"
+                                        >
+                                            "Back to List"
+                                        </button>
+                                        <button
+                                            type="button"
+                                            on:click=save_new_connection
+                                            class="py-2 px-4.5 rounded-xl bg-accent-indigo hover:bg-accent-indigo_hover text-white transition-all text-xs font-semibold active:scale-[0.97]"
+                                        >
+                                            "Save Connection"
+                                        </button>
                                     </div>
                                 </div>
-                                <input
-                                    type="password"
-                                    placeholder="sk-ant-..."
-                                    prop:value=move || anthropic_input.get()
-                                    on:input=move |ev| set_anthropic_input.set(event_target_value(&ev))
-                                    class="w-full px-3 py-2.5 text-sm bg-slate-950 border border-slate-800 rounded-xl outline-none text-slate-200 placeholder-slate-650 focus:border-indigo-650/80 transition-all font-mono"
-                                />
-                            </div>
+                            </Show>
                         </div>
 
-                        // Actions
-                        <div class="flex justify-end gap-3 mt-8">
+                        // Footer actions
+                        <div class="pt-4 border-t border-slate-800 shrink-0 flex justify-end">
                             <button
-                                on:click=move |_| set_show_settings.set(false)
-                                class="py-2 px-4 rounded-xl border border-slate-800 hover:bg-slate-800 text-slate-400 hover:text-slate-250 transition-all text-sm font-semibold active:scale-[0.97]"
+                                on:click=move |_| {
+                                    set_show_settings.set(false);
+                                    set_show_add_connection.set(false);
+                                }
+                                class="py-2 px-5 rounded-xl bg-slate-800 border border-slate-700 text-slate-200 hover:text-white transition-all text-xs font-semibold active:scale-[0.97]"
                             >
-                                "Cancel"
-                            </button>
-                            <button
-                                on:click=save_settings
-                                class="py-2 px-4.5 rounded-xl bg-accent-indigo hover:bg-accent-indigo_hover text-white transition-all text-sm font-semibold shadow-md active:scale-[0.97]"
-                            >
-                                "Save Keys"
+                                "Close"
                             </button>
                         </div>
                     </div>

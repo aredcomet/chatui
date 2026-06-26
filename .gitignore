@@ -1,0 +1,7 @@
+/dist/
+/target/
+/Cargo.lock
+.idea/
+.vscode/
+.agents/
+AGENTS.md

@@ -720,12 +720,15 @@ pub fn App() -> impl IntoView {
         if let Some(payload) = stream_chunks.get() {
             let current_id = current_conversation_id.get_untracked();
             if Some(payload.conversation_id.clone()) == current_id {
-                let mut current_msgs = messages.get_untracked();
-
                 if payload.done {
                     set_is_streaming.set(false);
+
+                    // Drain the pending buffer (the true in-progress state) for final metadata update
+                    let mut current_msgs = pending_messages
+                        .get_value()
+                        .unwrap_or_else(|| messages.get_untracked());
                     pending_messages.set_value(None);
-                    
+
                     if let Some(last_msg) = current_msgs.last_mut() {
                         if last_msg.role == MessageRole::Assistant {
                             if let Some(version) = last_msg.versions.get_mut(last_msg.active_version) {
@@ -756,7 +759,7 @@ pub fn App() -> impl IntoView {
                         }
                         set_conversations.set(convos);
                     }
-                    
+
                     let should_scroll = is_scroll_at_bottom();
                     set_messages.set(current_msgs);
                     if should_scroll {
@@ -765,6 +768,7 @@ pub fn App() -> impl IntoView {
                 } else if let Some(err_msg) = payload.error {
                     set_is_streaming.set(false);
                     pending_messages.set_value(None);
+                    let mut current_msgs = messages.get_untracked();
                     current_msgs.push(ChatMessage::new_text(
                         MessageRole::Assistant,
                         format!("⚠️ Error: {}", err_msg),
@@ -772,6 +776,13 @@ pub fn App() -> impl IntoView {
                     set_messages.set(current_msgs);
                     scroll_chat_to_bottom();
                 } else {
+                    // KEY FIX: always read from the in-progress buffer first so chunks accumulate
+                    // sequentially. Reading from the committed `messages` signal would give stale
+                    // data (the last 75ms flush snapshot), causing chunks to overwrite each other.
+                    let mut current_msgs = pending_messages
+                        .get_value()
+                        .unwrap_or_else(|| messages.get_untracked());
+
                     if let Some(last_msg) = current_msgs.last_mut() {
                         if last_msg.role == MessageRole::Assistant {
                             if let Some(version) = last_msg.versions.get_mut(last_msg.active_version) {
@@ -780,7 +791,7 @@ pub fn App() -> impl IntoView {
                                 }) = version.content.first_mut()
                                 {
                                     existing_text.push_str(&payload.text);
-                                    
+
                                     // Normalize custom raw stream tags if configured
                                     if let Some(rc) = get_active_model_reasoning_config() {
                                         if rc.enabled && rc.is_raw_stream {
@@ -2340,10 +2351,40 @@ pub fn App() -> impl IntoView {
                                                                             </div>
                                                                         </Show>
 
-                                                                        <Show when=move || stop_reason_for_cond.is_some()>
-                                                                            <div class="flex items-center gap-1">
-                                                                                <span>{format!("Stop reason: {}", stop_reason_for_text.clone().unwrap_or_default())}</span>
-                                                                            </div>
+                                                                        <Show when=move || {
+                                                                            stop_reason_for_cond.as_deref()
+                                                                                .map(|r| r != "stop" && r != "end_turn")
+                                                                                .unwrap_or(false)
+                                                                        }>
+                                                                            {
+                                                                                let sr_class = stop_reason_for_text.clone();
+                                                                                let sr_icon = stop_reason_for_text.clone();
+                                                                                let sr_label = stop_reason_for_text.clone();
+                                                                                view! {
+                                                                                    <div class={move || {
+                                                                                        if sr_class.as_deref() == Some("cancelled") {
+                                                                                            "flex items-center gap-1 text-amber-400/80".to_string()
+                                                                                        } else {
+                                                                                            "flex items-center gap-1".to_string()
+                                                                                        }
+                                                                                    }}>
+                                                                                        <Show when=move || sr_icon.as_deref() == Some("cancelled")
+                                                                                            fallback=|| view! {}
+                                                                                        >
+                                                                                            <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+                                                                                                <rect x="6" y="6" width="12" height="12" rx="1.5"/>
+                                                                                            </svg>
+                                                                                        </Show>
+                                                                                        <span>{move || {
+                                                                                            match sr_label.as_deref() {
+                                                                                                Some("cancelled") => "Generation stopped".to_string(),
+                                                                                                Some(r) => format!("Stop: {}", r),
+                                                                                                None => String::new(),
+                                                                                            }
+                                                                                        }}</span>
+                                                                                    </div>
+                                                                                }
+                                                                            }
                                                                         </Show>
                                                                     </div>
                                                                 }

@@ -536,6 +536,7 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
                 let mut first_content_token_time = None;
                 let mut token_count = 0;
                 let mut stop_reason = None;
+                let mut cancelled = false;
                 let mut in_thinking = false;
                 let mut thinking_enabled = false;
 
@@ -552,6 +553,7 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
                     tokio::select! {
                         _ = &mut cancel_rx => {
                             println!("Backend: stream cancelled for conversation {}", conversation_id);
+                            cancelled = true;
                             break;
                         }
                         chunk_opt = stream.next() => {
@@ -733,6 +735,12 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
                     None
                 };
 
+                let final_stop_reason = if cancelled {
+                    "cancelled".to_string()
+                } else {
+                    stop_reason.unwrap_or_else(|| "stop".to_string())
+                };
+
                 Ok(StreamPayload {
                     conversation_id: conversation_id.clone(),
                     text: "".to_string(),
@@ -741,7 +749,7 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
                     ttft_ms,
                     tokens_per_sec: Some(tokens_per_sec),
                     total_tokens: Some(token_count),
-                    stop_reason: Some(stop_reason.unwrap_or_else(|| "stop".to_string())),
+                    stop_reason: Some(final_stop_reason),
                     reasoning_duration_ms,
                 })
             }
@@ -790,6 +798,7 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
                 let mut first_token_time = None;
                 let mut token_count = 0;
                 let mut stop_reason = None;
+                let mut cancelled = false;
 
                 let mut stream = response.bytes_stream();
                 let mut buffer = Vec::new();
@@ -798,6 +807,7 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
                     tokio::select! {
                         _ = &mut cancel_rx => {
                             println!("Backend: stream cancelled for conversation {}", conversation_id);
+                            cancelled = true;
                             break;
                         }
                         chunk_opt = stream.next() => {
@@ -872,6 +882,12 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
                     0.0
                 };
 
+                let final_stop_reason = if cancelled {
+                    "cancelled".to_string()
+                } else {
+                    stop_reason.unwrap_or_else(|| "end_turn".to_string())
+                };
+
                 Ok(StreamPayload {
                     conversation_id: conversation_id.clone(),
                     text: "".to_string(),
@@ -880,7 +896,7 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
                     ttft_ms,
                     tokens_per_sec: Some(tokens_per_sec),
                     total_tokens: Some(token_count),
-                    stop_reason: Some(stop_reason.unwrap_or_else(|| "end_turn".to_string())),
+                    stop_reason: Some(final_stop_reason),
                     reasoning_duration_ms: None,
                 })
             }
@@ -913,6 +929,7 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
                 let mut first_token_time = None;
                 let mut token_count = 0;
                 let mut stop_reason = None;
+                let mut cancelled = false;
 
                 let mut stream = response.bytes_stream();
                 let mut buffer = Vec::new();
@@ -921,6 +938,7 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
                     tokio::select! {
                         _ = &mut cancel_rx => {
                             println!("Backend: stream cancelled for conversation {}", conversation_id);
+                            cancelled = true;
                             break;
                         }
                         chunk_opt = stream.next() => {
@@ -1010,6 +1028,12 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
                     0.0
                 };
 
+                let final_stop_reason = if cancelled {
+                    "cancelled".to_string()
+                } else {
+                    stop_reason.unwrap_or_else(|| "stop".to_string())
+                };
+
                 Ok(StreamPayload {
                     conversation_id: conversation_id.clone(),
                     text: "".to_string(),
@@ -1018,7 +1042,7 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
                     ttft_ms,
                     tokens_per_sec: Some(tokens_per_sec),
                     total_tokens: Some(token_count),
-                    stop_reason: Some(stop_reason.unwrap_or_else(|| "stop".to_string())),
+                    stop_reason: Some(final_stop_reason),
                     reasoning_duration_ms: None,
                 })
             }

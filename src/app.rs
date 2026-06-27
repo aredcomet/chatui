@@ -575,26 +575,39 @@ pub fn App() -> impl IntoView {
         }
     });
 
-    let is_scroll_at_bottom = move || -> bool {
+    // True when the user has intentionally scrolled away from the bottom during streaming.
+    // This is a latch: set on any upward scroll, cleared only when the user returns to the bottom
+    // (either by scrolling back, or when we auto-scroll and they haven't moved).
+    let user_scroll_pinned = StoredValue::new(false);
+
+    // Raw pixel helper — only used internally by the scroll event handler
+    let is_at_bottom_raw = || -> bool {
         if let Some(window) = web_sys::window() {
             if let Some(document) = window.document() {
                 if let Some(el) = document.get_element_by_id("chat-messages-container") {
                     let scroll_top = el.scroll_top();
                     let scroll_height = el.scroll_height();
                     let client_height = el.client_height();
-                    return scroll_height - scroll_top - client_height < 120;
+                    // Tight threshold — only treat as "at bottom" when actually at the bottom
+                    return scroll_height - scroll_top - client_height < 10;
                 }
             }
         }
         true
     };
 
-    // Scroll helper
+    // Kept for compatibility in places that still call is_scroll_at_bottom()
+    let is_scroll_at_bottom = move || -> bool {
+        !user_scroll_pinned.get_value()
+    };
+
+    // Scroll helper — programmatic scroll back to bottom also clears the pinned flag
     let scroll_chat_to_bottom = move || {
         if let Some(window) = web_sys::window() {
             if let Some(document) = window.document() {
                 if let Some(el) = document.get_element_by_id("chat-messages-container") {
                     el.set_scroll_top(el.scroll_height());
+                    user_scroll_pinned.set_value(false);
                 }
             }
         }
@@ -671,6 +684,29 @@ pub fn App() -> impl IntoView {
             let handler_js = handler.into_js_value();
             listen("chat-stream-chunk", handler_js.unchecked_ref()).await;
         });
+
+        // Attach scroll listener to chat container to latch user intent
+        let scroll_handler = Closure::wrap(Box::new(move || {
+            if is_at_bottom_raw() {
+                // User scrolled back to the very bottom — release the latch
+                user_scroll_pinned.set_value(false);
+            } else {
+                // User has scrolled away from bottom — lock auto-scroll
+                user_scroll_pinned.set_value(true);
+            }
+        }) as Box<dyn FnMut()>);
+
+        if let Some(window) = web_sys::window() {
+            if let Some(document) = window.document() {
+                if let Some(el) = document.get_element_by_id("chat-messages-container") {
+                    let _ = el.add_event_listener_with_callback(
+                        "scroll",
+                        scroll_handler.as_ref().unchecked_ref(),
+                    );
+                }
+            }
+        }
+        scroll_handler.forget();
     });
 
     // Effect to auto-resize the inline edit textarea when it is opened/mounted

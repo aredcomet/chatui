@@ -111,17 +111,20 @@ pub struct ChatTreeNode {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateFolderArgs {
     pub relative_path: String,
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MoveItemArgs {
     pub source_rel: String,
     pub dest_rel: String,
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeleteFolderRecursiveArgs {
     pub relative_path: String,
 }

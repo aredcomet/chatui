@@ -22,6 +22,30 @@ fn get_history_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+fn get_active_assets(conversation: &ChatConversation) -> std::collections::HashSet<PathBuf> {
+    use shared::ContentBlock;
+    let mut active = std::collections::HashSet::new();
+    for msg in &conversation.messages {
+        for version in &msg.versions {
+            for block in &version.content {
+                match block {
+                    ContentBlock::Image { path, .. } => {
+                        active.insert(PathBuf::from(path));
+                    }
+                    ContentBlock::Document { path: Some(path), .. } => {
+                        active.insert(PathBuf::from(path));
+                    }
+                    ContentBlock::Audio { path, .. } => {
+                        active.insert(PathBuf::from(path));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    active
+}
+
 pub fn save_conversation(app: &AppHandle, conversation: ChatConversation) -> Result<(), String> {
     let dir = get_history_dir(app)?;
     let file_path = dir.join(format!("{}.json", conversation.id));
@@ -36,6 +60,25 @@ pub fn save_conversation(app: &AppHandle, conversation: ChatConversation) -> Res
     fs::rename(temp_path, file_path)
         .map_err(|e| format!("Failed to commit conversation file: {}", e))?;
         
+    // Garbage collect unused assets in this thread's assets directory
+    if let Ok(assets_dir) = get_assets_dir(app, &conversation.id) {
+        if assets_dir.exists() {
+            let active_assets = get_active_assets(&conversation);
+            if let Ok(entries) = fs::read_dir(&assets_dir) {
+                for entry in entries {
+                    if let Ok(entry) = entry {
+                        let path = entry.path();
+                        if path.is_file() {
+                            if !active_assets.contains(&path) {
+                                let _ = fs::remove_file(path);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
     Ok(())
 }
 
@@ -131,6 +174,72 @@ mod tests {
         assert!(target_path.exists());
         let content = fs::read_to_string(target_path).unwrap();
         assert_eq!(content, "Hello Asset");
+        
+        fs::remove_dir_all(temp_dir).unwrap();
+    }
+
+    #[test]
+    fn test_asset_garbage_collection() {
+        use shared::{ChatConversation, ChatMessage, MessageRole, MessageVersion, MessageMetadata, ContentBlock, Provider};
+        let temp_dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        fs::create_dir_all(&temp_dir).unwrap();
+        
+        let file1 = temp_dir.join("referenced.png");
+        let file2 = temp_dir.join("orphaned.png");
+        fs::write(&file1, "referenced").unwrap();
+        fs::write(&file2, "orphaned").unwrap();
+        
+        let conversation = ChatConversation {
+            id: "test-thread".to_string(),
+            title: "Test".to_string(),
+            model: "test".to_string(),
+            provider: Provider::OpenAI,
+            created_at: chrono::Utc::now(),
+            messages: vec![ChatMessage {
+                id: "test-msg".to_string(),
+                role: MessageRole::User,
+                versions: vec![MessageVersion {
+                    content: vec![
+                        ContentBlock::Image {
+                            path: file1.to_string_lossy().to_string(),
+                            mime_type: "image/png".to_string(),
+                        }
+                    ],
+                    metadata: MessageMetadata {
+                        model: "test".to_string(),
+                        provider: Provider::OpenAI,
+                        connection_id: "test".to_string(),
+                        created_at: chrono::Utc::now(),
+                        ttft_ms: None,
+                        tokens_per_sec: None,
+                        stop_reason: None,
+                    }
+                }],
+                active_version: 0,
+            }],
+            updated_at: 0,
+            connection_id: None,
+            folder_id: None,
+            system_prompt: None,
+        };
+        
+        let active = get_active_assets(&conversation);
+        assert!(active.contains(&file1));
+        assert!(!active.contains(&file2));
+        
+        // Scan directory and clean up orphaned files (imitating the logic in save_conversation)
+        let entries = fs::read_dir(&temp_dir).unwrap();
+        for entry in entries {
+            let path = entry.unwrap().path();
+            if path.is_file() {
+                if !active.contains(&path) {
+                    fs::remove_file(path).unwrap();
+                }
+            }
+        }
+        
+        assert!(file1.exists());
+        assert!(!file2.exists());
         
         fs::remove_dir_all(temp_dir).unwrap();
     }

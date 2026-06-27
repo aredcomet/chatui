@@ -262,6 +262,9 @@ pub struct ApiConfig {
 pub struct ChatConversation {
     pub id: String,
     pub title: String,
+    pub model: String,
+    pub provider: Provider,
+    #[serde(default = "chrono::Utc::now")]
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub folder_id: Option<String>,
     pub system_prompt: Option<String>,

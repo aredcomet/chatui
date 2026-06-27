@@ -1,7 +1,10 @@
+#[cfg(not(debug_assertions))]
 use keyring::Entry;
 use shared::Provider;
 
+#[cfg(not(debug_assertions))]
 const SERVICE_NAME: &str = "chatui-api-keys";
+#[cfg(not(debug_assertions))]
 const CONNECTION_SERVICE_NAME: &str = "chatui-connection-keys";
 
 #[cfg(debug_assertions)]

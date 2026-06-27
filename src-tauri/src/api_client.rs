@@ -54,6 +54,7 @@ struct OpenAiStreamChoice {
 #[derive(Deserialize)]
 struct OpenAiStreamDelta {
     content: Option<String>,
+    reasoning_content: Option<String>,
 }
 
 // Anthropic API request structures
@@ -471,6 +472,7 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
     base_url: Option<String>,
     config: ApiConfig,
     messages: Vec<ChatMessage>,
+    reasoning_config: Option<shared::ModelReasoningConfig>,
 ) -> Result<(), String> {
     let client = reqwest::Client::new();
     let conversation_id_clone = conversation_id.clone();
@@ -532,6 +534,14 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
                 let mut first_token_time = None;
                 let mut token_count = 0;
                 let mut stop_reason = None;
+                let mut in_thinking = false;
+                let mut thinking_enabled = false;
+
+                if let Some(rc) = &reasoning_config {
+                    if rc.enabled && !rc.is_raw_stream {
+                        thinking_enabled = true;
+                    }
+                }
 
                 let mut stream = response.bytes_stream();
                 let mut buffer = Vec::new();
@@ -561,18 +571,67 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
                             match serde_json::from_str::<OpenAiStreamChunk>(data) {
                                 Ok(chunk) => {
                                     if let Some(choice) = chunk.choices.first() {
+                                        // 1. Process reasoning content if present
+                                        if thinking_enabled {
+                                            if let Some(reasoning) = &choice.delta.reasoning_content {
+                                                if !reasoning.is_empty() {
+                                                    let mut emit_text = String::new();
+                                                    if !in_thinking {
+                                                        in_thinking = true;
+                                                        emit_text.push_str("<think>");
+                                                    }
+                                                    emit_text.push_str(reasoning);
+                                                    
+                                                    if first_token_time.is_none() {
+                                                        first_token_time = Some(start_time.elapsed());
+                                                    }
+                                                    token_count += 1;
+                                                    
+                                                    println!("Backend: emitting reasoning token #{} -> {:?}", token_count, reasoning);
+                                                    window
+                                                        .emit(
+                                                            "chat-stream-chunk",
+                                                            StreamPayload {
+                                                                conversation_id: conversation_id.clone(),
+                                                                text: emit_text,
+                                                                done: false,
+                                                                error: None,
+                                                                ttft_ms: None,
+                                                                tokens_per_sec: None,
+                                                                total_tokens: None,
+                                                                stop_reason: None,
+                                                            },
+                                                        )
+                                                        .map_err(|e| e.to_string())?;
+                                                    
+                                                    if let Some(finish) = &choice.finish_reason {
+                                                        stop_reason = Some(finish.clone());
+                                                    }
+                                                    continue;
+                                                }
+                                            }
+                                        }
+
+                                        // 2. Process normal content
                                         if let Some(content) = &choice.delta.content {
+                                            let mut emit_text = String::new();
+                                            if in_thinking {
+                                                in_thinking = false;
+                                                emit_text.push_str("</think>\n");
+                                            }
+                                            emit_text.push_str(content);
+
                                             if first_token_time.is_none() {
                                                 first_token_time = Some(start_time.elapsed());
                                             }
                                             token_count += 1;
-                                            println!("Backend: emitting token #{} -> {:?}", token_count, content);
+                                            println!("Backend: emitting content token #{} -> {:?}", token_count, content);
                                             window
                                                 .emit(
                                                     "chat-stream-chunk",
                                                     StreamPayload {
                                                         conversation_id: conversation_id.clone(),
-                                                        text: content.clone(),
+                                                        text: emit_text,
                                                         done: false,
                                                         error: None,
                                                         ttft_ms: None,
@@ -596,6 +655,25 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
                             println!("Backend: line did not start with data:");
                         }
                     }
+                }
+
+                if in_thinking {
+                    println!("Backend: closing reasoning block at stream end");
+                    window
+                        .emit(
+                            "chat-stream-chunk",
+                            StreamPayload {
+                                conversation_id: conversation_id.clone(),
+                                text: "</think>\n".to_string(),
+                                done: false,
+                                error: None,
+                                ttft_ms: None,
+                                tokens_per_sec: None,
+                                total_tokens: None,
+                                stop_reason: None,
+                            },
+                        )
+                        .map_err(|e| e.to_string())?;
                 }
 
                 let total_duration = start_time.elapsed();
@@ -1143,6 +1221,7 @@ mod tests {
             Some("http://127.0.0.1:1234/v1".to_string()),
             config,
             messages,
+            None,
         ).await;
 
         assert!(res.is_ok(), "Mock stream_chat_completion failed: {:?}", res);

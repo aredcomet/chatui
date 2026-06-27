@@ -3,7 +3,7 @@ use leptos::{ev::SubmitEvent, prelude::*};
 use serde::Serialize;
 use shared::{
     ApiConfig, ChatConversation, ChatMessage, Connection, ContentPart, MessageRole, Provider,
-    StreamPayload, MessageVersion,
+    StreamPayload, MessageVersion, ModelReasoningConfig,
 };
 use wasm_bindgen::prelude::*;
 
@@ -223,6 +223,87 @@ fn render_inline(text: String) -> Vec<AnyView> {
     views
 }
 
+fn update_model_reasoning_config<F>(
+    configs_signal: WriteSignal<Vec<ModelReasoningConfig>>,
+    current_configs: Vec<ModelReasoningConfig>,
+    model_id: String,
+    mutator: F,
+) where
+    F: FnOnce(&mut ModelReasoningConfig),
+{
+    let mut configs = current_configs;
+    if let Some(config) = configs.iter_mut().find(|c| c.model_id == model_id) {
+        mutator(config);
+    } else {
+        let mut new_config = ModelReasoningConfig {
+            model_id: model_id.clone(),
+            enabled: false,
+            is_raw_stream: false,
+            start_tag: "<think>".to_string(),
+            end_tag: "</think>".to_string(),
+        };
+        mutator(&mut new_config);
+        configs.push(new_config);
+    }
+    configs_signal.set(configs);
+}
+
+fn parse_thinking_content(text: &str) -> (Option<String>, String) {
+    if let Some(start_idx) = text.find("<think>") {
+        let content_start = start_idx + "<think>".len();
+        if let Some(end_idx) = text[content_start..].find("</think>") {
+            let actual_end = content_start + end_idx;
+            let thinking = text[content_start..actual_end].to_string();
+            let remaining = format!("{}{}", &text[..start_idx], &text[actual_end + "</think>".len()..]);
+            (Some(thinking), remaining)
+        } else {
+            let thinking = text[content_start..].to_string();
+            let remaining = text[..start_idx].to_string();
+            (Some(thinking), remaining)
+        }
+    } else {
+        (None, text.to_string())
+    }
+}
+
+#[component]
+fn ThinkingBlock(thinking: String, is_thinking: bool) -> impl IntoView {
+    let (collapsed, set_collapsed) = signal(false);
+    
+    view! {
+        <div class="mb-3 rounded-xl border border-theme-border/40 bg-theme-panel/20 overflow-hidden theme-transition w-full">
+            <div 
+                on:click=move |_| set_collapsed.update(|c| *c = !*c)
+                class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-theme-border/10 select-none text-[11px] font-semibold text-theme-muted/80 theme-transition"
+            >
+                <div class="flex items-center gap-1.5">
+                    <svg class="w-3.5 h-3.5 text-theme-accent animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                    </svg>
+                    <span>"Thinking Process"</span>
+                    <Show when=move || is_thinking fallback=move || view! {}>
+                        <span class="inline-flex h-1.5 w-1.5 rounded-full bg-theme-accent animate-ping"></span>
+                    </Show>
+                </div>
+                <svg 
+                    class=move || format!("w-3.5 h-3.5 transform transition-transform duration-200 {}", if collapsed.get() { "-rotate-90" } else { "" })
+                    fill="none" 
+                    viewBox="0 0 24 24" 
+                    stroke="currentColor" 
+                    stroke-width="2.5"
+                >
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+                </svg>
+            </div>
+            <div 
+                class=move || format!("px-3.5 pb-3 pt-1 text-[11px] text-theme-muted/90 font-sans whitespace-pre-wrap border-l-2 border-theme-accent/30 ml-3.5 mb-2 leading-relaxed overflow-x-auto select-text {}", if collapsed.get() { "hidden" } else { "block" })
+            >
+                {thinking.clone()}
+            </div>
+        </div>
+    }
+}
+
 fn render_message_content(text: String) -> impl IntoView {
     let mut views = Vec::new();
     let parts = text.split("```");
@@ -397,6 +478,7 @@ pub fn App() -> impl IntoView {
     let (new_conn_search_query, set_new_conn_search_query) = signal(String::new());
     let (new_conn_enabled_models, set_new_conn_enabled_models) = signal(Vec::<String>::new());
     let (new_conn_default_model, set_new_conn_default_model) = signal(String::new());
+    let (new_conn_reasoning_configs, set_new_conn_reasoning_configs) = signal(Vec::<ModelReasoningConfig>::new());
 
     // Fetch models loading & errors
     let (fetching_models_loading, set_fetching_models_loading) = signal(false);
@@ -522,6 +604,14 @@ pub fn App() -> impl IntoView {
         }
     });
 
+    let get_active_model_reasoning_config = move || {
+        let conn_id = active_connection_id.get()?;
+        let conns = connections.get();
+        let conn = conns.iter().find(|c| c.id == conn_id)?;
+        let model = selected_model.get();
+        conn.reasoning_configs.iter().find(|rc| rc.model_id == model).cloned()
+    };
+
     // Streaming chunk listener
     Effect::new(move |_| {
         if let Some(payload) = stream_chunks.get() {
@@ -577,18 +667,52 @@ pub fn App() -> impl IntoView {
                                 }) = version.content.first_mut()
                                 {
                                     existing_text.push_str(&payload.text);
+                                    
+                                    // Normalize custom raw stream tags if configured
+                                    if let Some(rc) = get_active_model_reasoning_config() {
+                                        if rc.enabled && rc.is_raw_stream {
+                                            if !rc.start_tag.is_empty() && rc.start_tag != "<think>" {
+                                                *existing_text = existing_text.replace(&rc.start_tag, "<think>");
+                                            }
+                                            if !rc.end_tag.is_empty() && rc.end_tag != "</think>" {
+                                                *existing_text = existing_text.replace(&rc.end_tag, "</think>");
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         } else {
+                            let mut text = payload.text;
+                            if let Some(rc) = get_active_model_reasoning_config() {
+                                if rc.enabled && rc.is_raw_stream {
+                                    if !rc.start_tag.is_empty() && rc.start_tag != "<think>" {
+                                        text = text.replace(&rc.start_tag, "<think>");
+                                    }
+                                    if !rc.end_tag.is_empty() && rc.end_tag != "</think>" {
+                                        text = text.replace(&rc.end_tag, "</think>");
+                                    }
+                                }
+                            }
                             current_msgs.push(ChatMessage::new_text(
                                 MessageRole::Assistant,
-                                payload.text,
+                                text,
                             ));
                         }
                     } else {
+                        let mut text = payload.text;
+                        if let Some(rc) = get_active_model_reasoning_config() {
+                            if rc.enabled && rc.is_raw_stream {
+                                if !rc.start_tag.is_empty() && rc.start_tag != "<think>" {
+                                    text = text.replace(&rc.start_tag, "<think>");
+                                }
+                                if !rc.end_tag.is_empty() && rc.end_tag != "</think>" {
+                                    text = text.replace(&rc.end_tag, "</think>");
+                                }
+                            }
+                        }
                         current_msgs.push(ChatMessage::new_text(
                             MessageRole::Assistant,
-                            payload.text,
+                            text,
                         ));
                     }
                     set_messages.set(current_msgs);
@@ -1304,6 +1428,7 @@ pub fn App() -> impl IntoView {
         set_new_conn_default_model.set(conn.default_model.clone());
         // Pre-populate fetched models with the current enabled list so user can see/modify them
         set_new_conn_fetched_models.set(conn.enabled_models.clone());
+        set_new_conn_reasoning_configs.set(conn.reasoning_configs.clone());
         set_new_conn_search_query.set(String::new());
         set_fetching_models_error.set(None);
         set_show_add_connection.set(true);
@@ -1342,6 +1467,8 @@ pub fn App() -> impl IntoView {
         };
 
         let mut current_conns = connections.get_untracked();
+        let mut reasoning_configs = new_conn_reasoning_configs.get_untracked();
+        reasoning_configs.retain(|rc| enabled_models.contains(&rc.model_id));
 
         if let Some(edit_id) = editing_id {
             // ── Edit mode: update the existing connection in-place ──
@@ -1352,6 +1479,7 @@ pub fn App() -> impl IntoView {
                 conn.base_url = base_url;
                 conn.enabled_models = enabled_models;
                 conn.default_model = default_model.clone();
+                conn.reasoning_configs = reasoning_configs;
             }
             set_connections.set(current_conns.clone());
 
@@ -1370,6 +1498,7 @@ pub fn App() -> impl IntoView {
                 base_url,
                 enabled_models,
                 default_model: default_model.clone(),
+                reasoning_configs,
             };
             current_conns.push(conn.clone());
             set_connections.set(current_conns.clone());
@@ -1388,6 +1517,7 @@ pub fn App() -> impl IntoView {
         set_new_conn_search_query.set(String::new());
         set_new_conn_enabled_models.set(Vec::new());
         set_new_conn_default_model.set(String::new());
+        set_new_conn_reasoning_configs.set(Vec::new());
         set_fetching_models_error.set(None);
 
         spawn_local(async move {
@@ -1861,7 +1991,25 @@ pub fn App() -> impl IntoView {
                                                         <div class="space-y-4 max-w-full overflow-hidden">
                                                             {parts.iter().map(|part| match part {
                                                                 ContentPart::Text { text } => {
-                                                                    render_message_content(text.clone()).into_any()
+                                                                    let (thinking_opt, remaining) = parse_thinking_content(text);
+                                                                    let is_thinking_active = thinking_opt.is_some() && !text.contains("</think>");
+                                                                    let thinking_opt_for_show = thinking_opt.clone();
+                                                                    let thinking_opt_for_block = thinking_opt.clone();
+                                                                    
+                                                                    view! {
+                                                                        <div class="flex flex-col w-full">
+                                                                            <Show 
+                                                                                when=move || thinking_opt_for_show.is_some()
+                                                                                fallback=move || view! {}
+                                                                            >
+                                                                                <ThinkingBlock 
+                                                                                    thinking=thinking_opt_for_block.clone().unwrap_or_default() 
+                                                                                    is_thinking=is_thinking_active 
+                                                                                />
+                                                                            </Show>
+                                                                            {render_message_content(remaining.clone())}
+                                                                        </div>
+                                                                    }.into_any()
                                                                 }
                                                                 ContentPart::Image { mime_type, base64 } => {
                                                                     view! {
@@ -2504,6 +2652,149 @@ pub fn App() -> impl IntoView {
                                                     </select>
                                                 </div>
                                             </Show>
+
+                                            // Reasoning Configs per Model
+                                            <Show
+                                                when=move || !new_conn_enabled_models.get().is_empty()
+                                                fallback=move || view! {}
+                                            >
+                                                <div class="space-y-3 pt-4 border-t border-theme-border/40 mt-3">
+                                                    <h5 class="text-xs font-bold text-theme-text uppercase tracking-wider select-none">"Model Reasoning Settings"</h5>
+                                                    <div class="space-y-3 max-h-52 overflow-y-auto pr-1">
+                                                        {move || {
+                                                            let selected_models = new_conn_enabled_models.get();
+                                                            let current_configs = new_conn_reasoning_configs.get();
+                                                            
+                                                            selected_models.into_iter().map(|model_id| {
+                                                                let m_id = model_id.clone();
+                                                                let m_id_checkbox = model_id.clone();
+                                                                let m_id_raw = model_id.clone();
+                                                                let m_id_start = model_id.clone();
+                                                                let m_id_end = model_id.clone();
+                                                                
+                                                                let config = current_configs.iter().find(|c| c.model_id == m_id).cloned().unwrap_or_else(|| {
+                                                                    ModelReasoningConfig {
+                                                                        model_id: m_id.clone(),
+                                                                        enabled: false,
+                                                                        is_raw_stream: false,
+                                                                        start_tag: "<think>".to_string(),
+                                                                        end_tag: "</think>".to_string(),
+                                                                    }
+                                                                });
+                                                                
+                                                                let enabled = config.enabled;
+                                                                let is_raw_stream = config.is_raw_stream;
+                                                                let start_tag = config.start_tag.clone();
+                                                                let end_tag = config.end_tag.clone();
+                                                                
+                                                                view! {
+                                                                    <div class="p-3 rounded-xl border border-theme-border/60 bg-theme-bg/10 space-y-2">
+                                                                        <div class="flex items-center justify-between">
+                                                                            <span class="font-mono text-xs font-semibold text-theme-text truncate max-w-[60%] select-none">{m_id.clone()}</span>
+                                                                            
+                                                                            <label class="flex items-center gap-1.5 cursor-pointer text-xs select-none">
+                                                                                <input 
+                                                                                    type="checkbox"
+                                                                                    prop:checked=enabled
+                                                                                    on:change=move |ev| {
+                                                                                        let val = event_target_checked(&ev);
+                                                                                        update_model_reasoning_config(
+                                                                                            set_new_conn_reasoning_configs,
+                                                                                            new_conn_reasoning_configs.get_untracked(),
+                                                                                            m_id_checkbox.clone(),
+                                                                                            move |c| c.enabled = val,
+                                                                                        );
+                                                                                    }
+                                                                                    class="accent-theme-accent rounded cursor-pointer"
+                                                                                />
+                                                                                <span class="text-theme-muted font-medium">"Reasoning"</span>
+                                                                            </label>
+                                                                        </div>
+                                                                        
+                                                                        <Show when=move || enabled fallback=move || view! {}>
+                                                                            {
+                                                                                let m_id_raw_inner = m_id_raw.clone();
+                                                                                let m_id_start_inner = m_id_start.clone();
+                                                                                let m_id_end_inner = m_id_end.clone();
+                                                                                let start_tag = start_tag.clone();
+                                                                                let end_tag = end_tag.clone();
+                                                                                view! {
+                                                                                    <div class="pt-1.5 space-y-2 border-t border-theme-border/40">
+                                                                                        <label class="flex items-center gap-1.5 cursor-pointer text-xs select-none">
+                                                                                            <input 
+                                                                                                type="checkbox"
+                                                                                                prop:checked=is_raw_stream
+                                                                                                on:change=move |ev| {
+                                                                                                    let val = event_target_checked(&ev);
+                                                                                                    update_model_reasoning_config(
+                                                                                                        set_new_conn_reasoning_configs,
+                                                                                                        new_conn_reasoning_configs.get_untracked(),
+                                                                                                        m_id_raw_inner.clone(),
+                                                                                                        move |c| c.is_raw_stream = val,
+                                                                                                    );
+                                                                                                }
+                                                                                                class="accent-theme-accent rounded cursor-pointer"
+                                                                                            />
+                                                                                            <span class="text-theme-muted font-medium">"Expect tags in raw text stream"</span>
+                                                                                        </label>
+                                                                                        
+                                                                                        <Show when=move || is_raw_stream fallback=move || view! {}>
+                                                                                            {
+                                                                                                let m_id_start_innermost = m_id_start_inner.clone();
+                                                                                                let m_id_end_innermost = m_id_end_inner.clone();
+                                                                                                let start_tag = start_tag.clone();
+                                                                                                let end_tag = end_tag.clone();
+                                                                                                view! {
+                                                                                                    <div class="grid grid-cols-2 gap-2 pt-1">
+                                                                                                        <div class="space-y-1">
+                                                                                                            <label class="text-[10px] font-semibold text-theme-muted">"Start Tag"</label>
+                                                                                                            <input 
+                                                                                                                type="text"
+                                                                                                                prop:value=start_tag.clone()
+                                                                                                                on:input=move |ev| {
+                                                                                                                    let val = event_target_value(&ev);
+                                                                                                                    update_model_reasoning_config(
+                                                                                                                        set_new_conn_reasoning_configs,
+                                                                                                                        new_conn_reasoning_configs.get_untracked(),
+                                                                                                                        m_id_start_innermost.clone(),
+                                                                                                                        move |c| c.start_tag = val,
+                                                                                                                    );
+                                                                                                                }
+                                                                                                                class="w-full bg-theme-input border border-theme-border rounded-lg px-2 py-1 text-xs text-theme-text font-mono outline-none focus:border-theme-accent theme-transition"
+                                                                                                            />
+                                                                                                        </div>
+                                                                                                        <div class="space-y-1">
+                                                                                                            <label class="text-[10px] font-semibold text-theme-muted">"End Tag"</label>
+                                                                                                            <input 
+                                                                                                                type="text"
+                                                                                                                prop:value=end_tag.clone()
+                                                                                                                on:input=move |ev| {
+                                                                                                                    let val = event_target_value(&ev);
+                                                                                                                    update_model_reasoning_config(
+                                                                                                                        set_new_conn_reasoning_configs,
+                                                                                                                        new_conn_reasoning_configs.get_untracked(),
+                                                                                                                        m_id_end_innermost.clone(),
+                                                                                                                        move |c| c.end_tag = val,
+                                                                                                                    );
+                                                                                                                }
+                                                                                                                class="w-full bg-theme-input border border-theme-border rounded-lg px-2 py-1 text-xs text-theme-text font-mono outline-none focus:border-theme-accent theme-transition"
+                                                                                                            />
+                                                                                                        </div>
+                                                                                                    </div>
+                                                                                                }
+                                                                                            }
+                                                                                        </Show>
+                                                                                    </div>
+                                                                                }
+                                                                            }
+                                                                        </Show>
+                                                                    </div>
+                                                                }
+                                                            }).collect::<Vec<_>>()
+                                                        }}
+                                                    </div>
+                                                </div>
+                                            </Show>
                                         </div>
                                     </Show>
 
@@ -2521,6 +2812,7 @@ pub fn App() -> impl IntoView {
                                                 set_new_conn_search_query.set(String::new());
                                                 set_new_conn_enabled_models.set(Vec::new());
                                                 set_new_conn_default_model.set(String::new());
+                                                set_new_conn_reasoning_configs.set(Vec::new());
                                                 set_fetching_models_error.set(None);
                                             }
                                             class="py-2 px-4 rounded-xl border border-theme-border text-theme-muted hover:bg-theme-bg hover:text-theme-text transition-all text-xs font-semibold active:scale-[0.97]"
@@ -2552,6 +2844,7 @@ pub fn App() -> impl IntoView {
                                     set_new_conn_fetched_models.set(Vec::new());
                                     set_new_conn_enabled_models.set(Vec::new());
                                     set_new_conn_default_model.set(String::new());
+                                    set_new_conn_reasoning_configs.set(Vec::new());
                                     set_fetching_models_error.set(None);
                                 }
                                 class="py-2 px-5 rounded-xl bg-theme-bg border border-theme-border text-theme-muted hover:text-theme-text hover:border-theme-accent/50 transition-all text-xs font-semibold active:scale-[0.97]"

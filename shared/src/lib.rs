@@ -22,6 +22,15 @@ impl Provider {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModelReasoningConfig {
+    pub model_id: String,
+    pub enabled: bool,
+    pub is_raw_stream: bool,
+    pub start_tag: String,
+    pub end_tag: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Connection {
     pub id: String,                  // Unique UUID
     pub name: String,                // User-defined name
@@ -30,6 +39,8 @@ pub struct Connection {
     pub base_url: Option<String>,    // Custom Base URL
     pub enabled_models: Vec<String>, // Checked model names
     pub default_model: String,       // Default model name
+    #[serde(default)]
+    pub reasoning_configs: Vec<ModelReasoningConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

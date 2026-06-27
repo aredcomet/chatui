@@ -55,7 +55,7 @@ async fn send_message_stream(
     config: ApiConfig,
     messages: Vec<ChatMessage>,
 ) -> Result<(), String> {
-    let (api_key, base_url) = if let Some(ref conn_id) = config.connection_id {
+    let (api_key, base_url, reasoning_config) = if let Some(ref conn_id) = config.connection_id {
         // Load connection from store
         let connections = connections_store::load_connections(&app)?;
         let conn = connections
@@ -66,7 +66,12 @@ async fn send_message_stream(
         let key = credentials::get_connection_key(&conn.id)?
             .ok_or_else(|| "API Key not found in secure store".to_string())?;
 
-        (key, conn.base_url.clone())
+        let reasoning_config = conn.reasoning_configs
+            .iter()
+            .find(|rc| rc.model_id == config.model)
+            .cloned();
+
+        (key, conn.base_url.clone(), reasoning_config)
     } else {
         // Fallback to legacy global keychain keys
         let key = match credentials::get_key(config.provider)? {
@@ -78,7 +83,7 @@ async fn send_message_stream(
                 ))
             }
         };
-        (key, None)
+        (key, None, None)
     };
 
     // Spawn task to handle stream asynchronously and return immediately
@@ -90,6 +95,7 @@ async fn send_message_stream(
             base_url,
             config,
             messages,
+            reasoning_config,
         )
         .await;
     });

@@ -2,16 +2,55 @@ use leptos::task::spawn_local;
 use leptos::{ev::SubmitEvent, prelude::*};
 use serde::Serialize;
 use shared::{
-    ApiConfig, ChatConversation, ChatMessage, Connection, ContentPart, MessageRole, Provider,
-    StreamPayload, MessageVersion, ModelReasoningConfig,
+    ApiConfig, ChatConversation, ChatMessage, Connection, ContentBlock, MessageRole, Provider,
+    StreamPayload, MessageVersion, MessageMetadata, ModelReasoningConfig,
 };
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+
+fn append_assistant_token(version: &mut MessageVersion, token: &str) {
+    if version.content.is_empty() {
+        version.content.push(ContentBlock::Text { text: String::new() });
+    }
+
+    let last_block = match version.content.last_mut() {
+        Some(ContentBlock::Text { .. }) | Some(ContentBlock::Reasoning { .. }) => version.content.last_mut().unwrap(),
+        _ => {
+            version.content.push(ContentBlock::Text { text: String::new() });
+            version.content.last_mut().unwrap()
+        }
+    };
+
+    match last_block {
+        ContentBlock::Text { text } => {
+            text.push_str(token);
+            if let Some(pos) = text.find("<think>") {
+                let pre_think = text[..pos].to_string();
+                let post_think = text[pos + 7..].to_string();
+                *text = pre_think;
+                version.content.push(ContentBlock::Reasoning { text: post_think });
+            }
+        }
+        ContentBlock::Reasoning { text } => {
+            text.push_str(token);
+            if let Some(pos) = text.find("</think>") {
+                let pre_end = text[..pos].to_string();
+                let post_end = text[pos + 8..].to_string();
+                *text = pre_end;
+                version.content.push(ContentBlock::Text { text: post_end });
+            }
+        }
+        _ => unreachable!(),
+    }
+}
 
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "core"], js_name = invoke)]
     fn invoke_raw(cmd: &str, args: JsValue) -> js_sys::Promise;
+
+    #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "core"], js_name = convertFileSrc)]
+    fn convert_file_src(path: &str, protocol: Option<&str>) -> String;
 
     #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "event"])]
     async fn listen(event: &str, handler: &js_sys::Function) -> JsValue;
@@ -768,11 +807,9 @@ pub fn App() -> impl IntoView {
                     if let Some(last_msg) = current_msgs.last_mut() {
                         if last_msg.role == MessageRole::Assistant {
                             if let Some(version) = last_msg.versions.get_mut(last_msg.active_version) {
-                                version.ttft_ms = payload.ttft_ms;
-                                version.tokens_per_sec = payload.tokens_per_sec;
-                                version.total_tokens = payload.total_tokens;
-                                version.stop_reason = payload.stop_reason.clone();
-                                version.reasoning_duration_ms = payload.reasoning_duration_ms;
+                                version.metadata.ttft_ms = payload.ttft_ms;
+                                version.metadata.tokens_per_sec = payload.tokens_per_sec;
+                                version.metadata.stop_reason = payload.stop_reason.clone();
                             }
                         }
                     }
@@ -822,24 +859,25 @@ pub fn App() -> impl IntoView {
                     if let Some(last_msg) = current_msgs.last_mut() {
                         if last_msg.role == MessageRole::Assistant {
                             if let Some(version) = last_msg.versions.get_mut(last_msg.active_version) {
-                                if let Some(ContentPart::Text {
-                                    text: ref mut existing_text,
-                                }) = version.content.first_mut()
-                                {
-                                    existing_text.push_str(&payload.text);
-
-                                    // Normalize custom raw stream tags if configured
-                                    if let Some(rc) = get_active_model_reasoning_config() {
-                                        if rc.enabled && rc.is_raw_stream {
-                                            if !rc.start_tag.is_empty() && rc.start_tag != "<think>" {
-                                                *existing_text = existing_text.replace(&rc.start_tag, "<think>");
-                                            }
-                                            if !rc.end_tag.is_empty() && rc.end_tag != "</think>" {
-                                                *existing_text = existing_text.replace(&rc.end_tag, "</think>");
-                                            }
+                                // Update metadata if any is returned in the payload
+                                if payload.done {
+                                    version.metadata.ttft_ms = payload.ttft_ms;
+                                    version.metadata.tokens_per_sec = payload.tokens_per_sec;
+                                    version.metadata.stop_reason = payload.stop_reason.clone();
+                                }
+                                
+                                let mut text = payload.text;
+                                if let Some(rc) = get_active_model_reasoning_config() {
+                                    if rc.enabled && rc.is_raw_stream {
+                                        if !rc.start_tag.is_empty() && rc.start_tag != "<think>" {
+                                            text = text.replace(&rc.start_tag, "<think>");
+                                        }
+                                        if !rc.end_tag.is_empty() && rc.end_tag != "</think>" {
+                                            text = text.replace(&rc.end_tag, "</think>");
                                         }
                                     }
                                 }
+                                append_assistant_token(version, &text);
                             }
                         } else {
                             let mut text = payload.text;
@@ -853,10 +891,29 @@ pub fn App() -> impl IntoView {
                                     }
                                 }
                             }
-                            current_msgs.push(ChatMessage::new_text(
-                                MessageRole::Assistant,
-                                text,
-                            ));
+                            
+                            let metadata = MessageMetadata {
+                                model: selected_model.get_untracked(),
+                                provider: selected_provider.get_untracked(),
+                                connection_id: active_connection_id.get_untracked().unwrap_or_default(),
+                                created_at: chrono::Utc::now(),
+                                ttft_ms: payload.ttft_ms,
+                                tokens_per_sec: payload.tokens_per_sec,
+                                stop_reason: payload.stop_reason.clone(),
+                            };
+                            
+                            let mut version = MessageVersion {
+                                content: vec![],
+                                metadata,
+                            };
+                            append_assistant_token(&mut version, &text);
+                            
+                            current_msgs.push(ChatMessage {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                role: MessageRole::Assistant,
+                                versions: vec![version],
+                                active_version: 0,
+                            });
                         }
                     } else {
                         let mut text = payload.text;
@@ -870,10 +927,29 @@ pub fn App() -> impl IntoView {
                                 }
                             }
                         }
-                        current_msgs.push(ChatMessage::new_text(
-                            MessageRole::Assistant,
-                            text,
-                        ));
+                        
+                        let metadata = MessageMetadata {
+                            model: selected_model.get_untracked(),
+                            provider: selected_provider.get_untracked(),
+                            connection_id: active_connection_id.get_untracked().unwrap_or_default(),
+                            created_at: chrono::Utc::now(),
+                            ttft_ms: payload.ttft_ms,
+                            tokens_per_sec: payload.tokens_per_sec,
+                            stop_reason: payload.stop_reason.clone(),
+                        };
+                        
+                        let mut version = MessageVersion {
+                            content: vec![],
+                            metadata,
+                        };
+                        append_assistant_token(&mut version, &text);
+                        
+                        current_msgs.push(ChatMessage {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            role: MessageRole::Assistant,
+                            versions: vec![version],
+                            active_version: 0,
+                        });
                     }
                     pending_messages.set_value(Some(current_msgs));
                 }
@@ -1060,6 +1136,9 @@ pub fn App() -> impl IntoView {
             title: format!("New Chat ({})", provider.to_string()),
             model,
             provider,
+            created_at: chrono::Utc::now(),
+            folder_id: None,
+            system_prompt: None,
             messages: Vec::new(),
             updated_at: js_sys::Date::now() as u64,
             connection_id: resolved_conn_id,
@@ -1235,14 +1314,14 @@ pub fn App() -> impl IntoView {
             if let Some(version) = msg.versions.get_mut(msg.active_version) {
                 let mut has_text = false;
                 for part in &mut version.content {
-                    if let ContentPart::Text { text } = part {
+                    if let ContentBlock::Text { text } = part {
                         *text = new_text.clone();
                         has_text = true;
                         break;
                     }
                 }
                 if !has_text {
-                    version.content.insert(0, ContentPart::Text { text: new_text.clone() });
+                    version.content.insert(0, ContentBlock::Text { text: new_text.clone() });
                 }
             }
             
@@ -1321,6 +1400,9 @@ pub fn App() -> impl IntoView {
                     title: format!("Branch of {}", convo.title),
                     model: convo.model.clone(),
                     provider: convo.provider,
+                    created_at: chrono::Utc::now(),
+                    folder_id: convo.folder_id.clone(),
+                    system_prompt: convo.system_prompt.clone(),
                     messages: branched_messages.clone(),
                     updated_at: js_sys::Date::now() as u64,
                     connection_id: convo.connection_id.clone(),
@@ -1357,12 +1439,16 @@ pub fn App() -> impl IntoView {
         }
         
         let new_version = MessageVersion {
-            content: vec![ContentPart::Text { text: String::new() }],
-            ttft_ms: None,
-            tokens_per_sec: None,
-            total_tokens: None,
-            stop_reason: None,
-            reasoning_duration_ms: None,
+            content: vec![ContentBlock::Text { text: String::new() }],
+            metadata: MessageMetadata {
+                model: selected_model.get_untracked(),
+                provider: selected_provider.get_untracked(),
+                connection_id: active_connection_id.get_untracked().unwrap_or_default(),
+                created_at: chrono::Utc::now(),
+                ttft_ms: None,
+                tokens_per_sec: None,
+                stop_reason: None,
+            },
         };
         current_msgs[last_idx].versions.push(new_version);
         let new_active = current_msgs[last_idx].versions.len() - 1;
@@ -1486,6 +1572,9 @@ pub fn App() -> impl IntoView {
                     title,
                     model,
                     provider,
+                    created_at: chrono::Utc::now(),
+                    folder_id: None,
+                    system_prompt: None,
                     messages: Vec::new(),
                     updated_at: js_sys::Date::now() as u64,
                     connection_id: active_connection_id.get_untracked(),
@@ -1499,34 +1588,6 @@ pub fn App() -> impl IntoView {
                 uuid
             }
         };
-
-        let mut parts = Vec::new();
-        if !text.is_empty() {
-            parts.push(ContentPart::Text { text: text.clone() });
-        }
-        if let Some((mime, b64)) = img {
-            parts.push(ContentPart::Image {
-                mime_type: mime,
-                base64: b64,
-            });
-        }
-
-        let new_user_msg = ChatMessage {
-            role: MessageRole::User,
-            versions: vec![MessageVersion {
-                content: parts,
-                ttft_ms: None,
-                tokens_per_sec: None,
-                total_tokens: None,
-                stop_reason: None,
-                reasoning_duration_ms: None,
-            }],
-            active_version: 0,
-        };
-
-        let mut active_msgs = messages.get_untracked();
-        active_msgs.push(new_user_msg);
-        set_messages.set(active_msgs.clone());
 
         set_input_text.set(String::new());
         if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
@@ -1546,26 +1607,86 @@ pub fn App() -> impl IntoView {
 
         let api_config = ApiConfig {
             provider,
-            model,
+            model: model.clone(),
             temperature: temp,
             max_tokens: None,
-            connection_id: conn_id,
+            connection_id: conn_id.clone(),
         };
 
-        let messages_c = active_msgs.clone();
+        let active_id_c = active_id.clone();
         spawn_local(async move {
+            let mut parts = Vec::new();
+            if !text.is_empty() {
+                parts.push(ContentBlock::Text { text: text.clone() });
+            }
+
+            if let Some((mime, b64)) = img {
+                #[derive(Serialize)]
+                struct SaveThreadAssetArgs {
+                    thread_id: String,
+                    filename: String,
+                    base64_data: String,
+                }
+                
+                let ext = match mime.as_str() {
+                    "image/png" => "png",
+                    "image/jpeg" | "image/jpg" => "jpg",
+                    "image/webp" => "webp",
+                    "image/gif" => "gif",
+                    _ => "bin",
+                };
+                let filename = format!("{}.{}", uuid::Uuid::new_v4(), ext);
+                let args = serde_wasm_bindgen::to_value(&SaveThreadAssetArgs {
+                    thread_id: active_id_c.clone(),
+                    filename,
+                    base64_data: b64,
+                }).unwrap();
+
+                let promise = invoke_raw("save_thread_asset", args);
+                if let Ok(path_val) = wasm_bindgen_futures::JsFuture::from(promise).await {
+                    if let Some(path_str) = path_val.as_string() {
+                        parts.push(ContentBlock::Image {
+                            path: path_str,
+                            mime_type: mime,
+                        });
+                    }
+                }
+            }
+
+            let new_user_msg = ChatMessage {
+                id: uuid::Uuid::new_v4().to_string(),
+                role: MessageRole::User,
+                versions: vec![MessageVersion {
+                    content: parts,
+                    metadata: MessageMetadata {
+                        model: model.clone(),
+                        provider,
+                        connection_id: conn_id.clone().unwrap_or_default(),
+                        created_at: chrono::Utc::now(),
+                        ttft_ms: None,
+                        tokens_per_sec: None,
+                        stop_reason: None,
+                    },
+                }],
+                active_version: 0,
+            };
+
+            let mut active_msgs = messages.get_untracked();
+            active_msgs.push(new_user_msg.clone());
+            set_messages.set(active_msgs.clone());
+
             let args = serde_wasm_bindgen::to_value(&SendMessageStreamArgs {
-                conversation_id: active_id.clone(),
+                conversation_id: active_id_c.clone(),
                 config: api_config,
-                messages: messages_c,
+                messages: active_msgs.clone(),
             })
             .unwrap();
 
-            let promise = invoke_raw("send_message_stream", args);
-            let invoke_res = wasm_bindgen_futures::JsFuture::from(promise).await;
+            let stream_promise = invoke_raw("send_message_stream", args);
+            let invoke_res = wasm_bindgen_futures::JsFuture::from(stream_promise).await;
 
             let mut convos = conversations.get_untracked();
-            if let Some(convo) = convos.iter_mut().find(|c| c.id == active_id) {
+            if let Some(convo) = convos.iter_mut().find(|c| c.id == active_id_c) {
                 convo.messages = active_msgs.clone();
                 convo.updated_at = js_sys::Date::now() as u64;
 
@@ -1583,6 +1704,7 @@ pub fn App() -> impl IntoView {
                     serde_wasm_bindgen::to_value(&SaveConversationArgs {
                         conversation: convo_clone,
                     })
+
                     .unwrap(),
                 );
                 let _ = wasm_bindgen_futures::JsFuture::from(save_promise).await;
@@ -2133,7 +2255,7 @@ pub fn App() -> impl IntoView {
 
                             let active_ver = msg.versions.get(msg.active_version);
                             let content_parts = active_ver.map(|v| v.content.clone()).unwrap_or_default();
-                            let reasoning_duration = active_ver.and_then(|v| v.reasoning_duration_ms);
+                            let reasoning_duration: Option<u64> = None;
 
                             if is_user {
                                 view! {
@@ -2151,17 +2273,40 @@ pub fn App() -> impl IntoView {
                                                         view! {
                                                             <div class="space-y-3 max-w-full overflow-hidden prose max-w-none font-serif leading-relaxed text-theme-text">
                                                                 {parts.iter().map(|part| match part {
-                                                                    ContentPart::Text { text } => {
+                                                                    ContentBlock::Text { text } => {
                                                                         render_message_content(text.clone()).into_any()
                                                                     }
-                                                                    ContentPart::Image { mime_type, base64 } => {
+                                                                    ContentBlock::Reasoning { text } => {
+                                                                        view! {
+                                                                            <div class="border-l-2 border-theme-accent/30 pl-3 py-1 my-1 text-theme-muted/90 italic font-sans text-sm bg-theme-panel/50 rounded-r-md">
+                                                                                "Thinking: " {text.clone()}
+                                                                            </div>
+                                                                        }.into_any()
+                                                                    }
+                                                                    ContentBlock::Image { path, mime_type: _ } => {
+                                                                        let src_url = convert_file_src(path, None);
                                                                         view! {
                                                                             <div class="rounded-lg overflow-hidden border border-theme-border max-w-sm mt-1">
                                                                                 <img
-                                                                                    src={format!("data:{};base64,{}", mime_type, base64)}
+                                                                                    src=src_url
                                                                                     class="w-full object-cover max-h-60"
                                                                                     alt="Attached Image"
                                                                                 />
+                                                                            </div>
+                                                                        }.into_any()
+                                                                    }
+                                                                    ContentBlock::Document { path, mime_type } => {
+                                                                        let path_desc = path.as_ref().map(|p| p.as_str()).unwrap_or("missing");
+                                                                        view! {
+                                                                            <div class="flex items-center gap-2 p-2 bg-theme-panel rounded-lg border border-theme-border/40 text-xs text-theme-muted/90 font-sans mt-1">
+                                                                                "📄 Document (" {mime_type.clone()} "): " {path_desc.to_string()}
+                                                                            </div>
+                                                                        }.into_any()
+                                                                    }
+                                                                    ContentBlock::Audio { path, duration_secs } => {
+                                                                        view! {
+                                                                            <div class="flex items-center gap-2 p-2 bg-theme-panel rounded-lg border border-theme-border/40 text-xs text-theme-muted/90 font-sans mt-1">
+                                                                                "🎵 Audio (" {*duration_secs} "s): " {path.clone()}
                                                                             </div>
                                                                         }.into_any()
                                                                     }
@@ -2270,7 +2415,7 @@ pub fn App() -> impl IntoView {
                                                     view! {
                                                         <div class="space-y-4 max-w-full overflow-hidden">
                                                             {parts.iter().map(|part| match part {
-                                                                ContentPart::Text { text } => {
+                                                                ContentBlock::Text { text } => {
                                                                     let (thinking_opt, remaining) = parse_thinking_content(text);
                                                                     let is_thinking_active = thinking_opt.is_some() && !text.contains("</think>");
                                                                     let thinking_opt_for_show = thinking_opt.clone();
@@ -2292,14 +2437,43 @@ pub fn App() -> impl IntoView {
                                                                         </div>
                                                                     }.into_any()
                                                                 }
-                                                                ContentPart::Image { mime_type, base64 } => {
+                                                                ContentBlock::Reasoning { text } => {
+                                                                    let is_thinking_active = is_streaming.get() && idx == messages.get().len() - 1;
+                                                                    view! {
+                                                                        <div class="flex flex-col w-full my-1">
+                                                                            <ThinkingBlock 
+                                                                                thinking=text.clone() 
+                                                                                is_thinking=is_thinking_active 
+                                                                                duration_ms=reasoning_duration
+                                                                            />
+                                                                        </div>
+                                                                    }.into_any()
+                                                                }
+                                                                ContentBlock::Image { path, mime_type: _ } => {
+                                                                    let src_url = convert_file_src(path, None);
                                                                     view! {
                                                                         <div class="rounded-lg overflow-hidden border border-theme-border max-w-sm mt-1">
                                                                             <img
-                                                                                src={format!("data:{};base64,{}", mime_type, base64)}
+                                                                                src=src_url
                                                                                 class="w-full object-cover max-h-60"
                                                                                 alt="Attached Image"
                                                                             />
+                                                                        </div>
+                                                                    }.into_any()
+                                                                }
+                                                                ContentBlock::Document { path, mime_type } => {
+                                                                    let path_desc = path.as_ref().map(|p| p.as_str()).unwrap_or("missing");
+                                                                    view! {
+                                                                        <div class="flex items-center gap-2 p-2 bg-theme-panel rounded-lg border border-theme-border/40 text-xs text-theme-muted/90 font-sans mt-1">
+                                                                            "📄 Document (" {mime_type.clone()} "): " {path_desc.to_string()}
+                                                                        </div>
+                                                                    }.into_any()
+                                                                    
+                                                                }
+                                                                ContentBlock::Audio { path, duration_secs } => {
+                                                                    view! {
+                                                                        <div class="flex items-center gap-2 p-2 bg-theme-panel rounded-lg border border-theme-border/40 text-xs text-theme-muted/90 font-sans mt-1">
+                                                                            "🎵 Audio (" {*duration_secs} "s): " {path.clone()}
                                                                         </div>
                                                                     }.into_any()
                                                                 }
@@ -2348,42 +2522,33 @@ pub fn App() -> impl IntoView {
                                                 let total_versions = msg.versions.len();
                                                 let active_version_idx = msg.active_version;
                                                 
-                                                let show_stats = active_ver.as_ref().map(|v| v.ttft_ms.is_some() || v.tokens_per_sec.is_some() || v.total_tokens.is_some() || v.stop_reason.is_some()).unwrap_or(false);
+                                                let show_stats = active_ver.as_ref().map(|v| v.metadata.ttft_ms.is_some() || v.metadata.tokens_per_sec.is_some() || v.metadata.stop_reason.is_some()).unwrap_or(false);
                                                 
                                                 view! {
                                                     <div class="mt-4 flex flex-col gap-1.5 font-sans">
                                                         <Show when=move || show_stats>
                                                             {
                                                                 let ver = active_ver.clone().unwrap();
-                                                                let stop_reason_for_cond = ver.stop_reason.clone();
-                                                                let stop_reason_for_text = ver.stop_reason.clone();
+                                                                let stop_reason_for_cond = ver.metadata.stop_reason.clone();
+                                                                let stop_reason_for_text = ver.metadata.stop_reason.clone();
                                                                 view! {
                                                                     <div class="flex flex-wrap items-center gap-4 mt-1.5 text-[10px] font-mono text-theme-muted select-none">
-                                                                        <Show when=move || ver.tokens_per_sec.is_some()>
+                                                                        <Show when=move || ver.metadata.tokens_per_sec.is_some()>
                                                                             <div class="flex items-center gap-1">
                                                                                 <svg class="w-3 h-3 text-theme-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                                                                                     <path stroke-linecap="round" stroke-linejoin="round" d="M12 6V12h6a6 6 0 10-6-6z" />
                                                                                     <path stroke-linecap="round" stroke-linejoin="round" d="M12 2a10 10 0 1010 10A10 10 0 0012 2zm0 18a8 8 0 118-8 8 8 0 01-8 8z" />
                                                                                 </svg>
-                                                                                <span>{format!("{:.1} t/s", ver.tokens_per_sec.unwrap_or(0.0))}</span>
+                                                                                <span>{format!("{:.1} t/s", ver.metadata.tokens_per_sec.unwrap_or(0.0))}</span>
                                                                             </div>
                                                                         </Show>
 
-                                                                        <Show when=move || ver.total_tokens.is_some()>
-                                                                            <div class="flex items-center gap-1">
-                                                                                <svg class="w-3 h-3 text-theme-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                                                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2H5a2 2 0 00-2 2v2m14-4V5a2 2 0 00-2-2H5a2 2 0 00-2 2v2" />
-                                                                                </svg>
-                                                                                <span>{format!("{} tokens", ver.total_tokens.unwrap_or(0))}</span>
-                                                                            </div>
-                                                                        </Show>
-
-                                                                        <Show when=move || ver.ttft_ms.is_some()>
+                                                                        <Show when=move || ver.metadata.ttft_ms.is_some()>
                                                                             <div class="flex items-center gap-1">
                                                                                 <svg class="w-3 h-3 text-theme-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                                                                                     <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                                                                                 </svg>
-                                                                                <span>{format!("{:.2}s TTFT", (ver.ttft_ms.unwrap_or(0) as f32) / 1000.0)}</span>
+                                                                                <span>{format!("{:.2}s TTFT", (ver.metadata.ttft_ms.unwrap_or(0) as f32) / 1000.0)}</span>
                                                                             </div>
                                                                         </Show>
 
@@ -2428,7 +2593,7 @@ pub fn App() -> impl IntoView {
                                                         </Show>
 
                                                         <div class="flex items-center justify-between mt-1 text-theme-muted text-xs select-none">
-                                                            <Show when=move || is_last_msg && (total_versions > 1)>
+                                                            <Show when=move || (total_versions > 1)>
                                                                 <div class="flex items-center gap-1 bg-theme-panel rounded-lg p-0.5 border border-theme-border/60">
                                                                     <button
                                                                         type="button"

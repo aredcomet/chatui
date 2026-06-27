@@ -784,6 +784,23 @@ pub fn App() -> impl IntoView {
         let id_str = event_target_value(&ev);
         if id_str.is_empty() {
             set_active_connection_id.set(None);
+            if let Some(convo_id) = current_conversation_id.get_untracked() {
+                let mut convos = conversations.get_untracked();
+                if let Some(convo) = convos.iter_mut().find(|c| c.id == convo_id) {
+                    convo.connection_id = None;
+                    convo.updated_at = js_sys::Date::now() as u64;
+
+                    let convo_clone = convo.clone();
+                    spawn_local(async move {
+                        let args = serde_wasm_bindgen::to_value(&SaveConversationArgs {
+                            conversation: convo_clone,
+                        })
+                        .unwrap();
+                        invoke("save_conversation", args).await;
+                    });
+                }
+                set_conversations.set(convos);
+            }
             return;
         }
         set_active_connection_id.set(Some(id_str.clone()));
@@ -793,13 +810,58 @@ pub fn App() -> impl IntoView {
             .iter()
             .find(|c| c.id == id_str)
         {
-            set_selected_provider.set(conn.provider);
-            set_selected_model.set(conn.default_model.clone());
+            let provider = conn.provider;
+            let model = conn.default_model.clone();
+            let connection_id = Some(id_str);
+
+            set_selected_provider.set(provider);
+            set_selected_model.set(model.clone());
+
+            // Save connection change to current conversation
+            if let Some(convo_id) = current_conversation_id.get_untracked() {
+                let mut convos = conversations.get_untracked();
+                if let Some(convo) = convos.iter_mut().find(|c| c.id == convo_id) {
+                    convo.provider = provider;
+                    convo.model = model;
+                    convo.connection_id = connection_id;
+                    convo.updated_at = js_sys::Date::now() as u64;
+
+                    let convo_clone = convo.clone();
+                    spawn_local(async move {
+                        let args = serde_wasm_bindgen::to_value(&SaveConversationArgs {
+                            conversation: convo_clone,
+                        })
+                        .unwrap();
+                        invoke("save_conversation", args).await;
+                    });
+                }
+                set_conversations.set(convos);
+            }
         }
     };
 
     let on_model_change = move |ev| {
-        set_selected_model.set(event_target_value(&ev));
+        let model = event_target_value(&ev);
+        set_selected_model.set(model.clone());
+
+        // Save model change to current conversation
+        if let Some(convo_id) = current_conversation_id.get_untracked() {
+            let mut convos = conversations.get_untracked();
+            if let Some(convo) = convos.iter_mut().find(|c| c.id == convo_id) {
+                convo.model = model;
+                convo.updated_at = js_sys::Date::now() as u64;
+
+                let convo_clone = convo.clone();
+                spawn_local(async move {
+                    let args = serde_wasm_bindgen::to_value(&SaveConversationArgs {
+                        conversation: convo_clone,
+                    })
+                    .unwrap();
+                    invoke("save_conversation", args).await;
+                });
+            }
+            set_conversations.set(convos);
+        }
     };
 
     let update_input = move |ev: web_sys::Event| {
@@ -825,6 +887,7 @@ pub fn App() -> impl IntoView {
             set_messages.set(convo.messages.clone());
             set_selected_provider.set(convo.provider);
             set_selected_model.set(convo.model.clone());
+            set_active_connection_id.set(convo.connection_id.clone());
             spawn_local(async move {
                 scroll_chat_to_bottom();
             });
@@ -845,6 +908,7 @@ pub fn App() -> impl IntoView {
             provider,
             messages: Vec::new(),
             updated_at: js_sys::Date::now() as u64,
+            connection_id: active_connection_id.get_untracked(),
         };
 
         let mut current_convs = conversations.get_untracked();
@@ -1105,6 +1169,7 @@ pub fn App() -> impl IntoView {
                     provider: convo.provider,
                     messages: branched_messages.clone(),
                     updated_at: js_sys::Date::now() as u64,
+                    connection_id: convo.connection_id.clone(),
                 };
                 
                 convos.insert(0, new_convo.clone());
@@ -1269,6 +1334,7 @@ pub fn App() -> impl IntoView {
                     provider,
                     messages: Vec::new(),
                     updated_at: js_sys::Date::now() as u64,
+                    connection_id: active_connection_id.get_untracked(),
                 };
 
                 let mut current_convs = conversations.get_untracked();

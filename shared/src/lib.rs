@@ -179,6 +179,8 @@ pub struct ChatConversation {
     pub provider: Provider,
     pub messages: Vec<ChatMessage>,
     pub updated_at: u64,
+    #[serde(default)]
+    pub connection_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

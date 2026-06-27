@@ -600,8 +600,13 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
 
                 let total_duration = start_time.elapsed();
                 let ttft_ms = first_token_time.map(|d| d.as_millis() as u64);
-                let tokens_per_sec = if total_duration.as_secs_f32() > 0.0 {
-                    token_count as f32 / total_duration.as_secs_f32()
+                let tokens_per_sec = if let Some(first_tok_dur) = first_token_time {
+                    let gen_duration = total_duration.saturating_sub(first_tok_dur);
+                    if gen_duration.as_secs_f32() > 0.0 {
+                        token_count as f32 / gen_duration.as_secs_f32()
+                    } else {
+                        0.0
+                    }
                 } else {
                     0.0
                 };
@@ -719,8 +724,13 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
 
                 let total_duration = start_time.elapsed();
                 let ttft_ms = first_token_time.map(|d| d.as_millis() as u64);
-                let tokens_per_sec = if total_duration.as_secs_f32() > 0.0 {
-                    token_count as f32 / total_duration.as_secs_f32()
+                let tokens_per_sec = if let Some(first_tok_dur) = first_token_time {
+                    let gen_duration = total_duration.saturating_sub(first_tok_dur);
+                    if gen_duration.as_secs_f32() > 0.0 {
+                        token_count as f32 / gen_duration.as_secs_f32()
+                    } else {
+                        0.0
+                    }
                 } else {
                     0.0
                 };
@@ -837,8 +847,13 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
 
                 let total_duration = start_time.elapsed();
                 let ttft_ms = first_token_time.map(|d| d.as_millis() as u64);
-                let tokens_per_sec = if total_duration.as_secs_f32() > 0.0 {
-                    token_count as f32 / total_duration.as_secs_f32()
+                let tokens_per_sec = if let Some(first_tok_dur) = first_token_time {
+                    let gen_duration = total_duration.saturating_sub(first_tok_dur);
+                    if gen_duration.as_secs_f32() > 0.0 {
+                        token_count as f32 / gen_duration.as_secs_f32()
+                    } else {
+                        0.0
+                    }
                 } else {
                     0.0
                 };

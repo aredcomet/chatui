@@ -84,3 +84,53 @@ Logging has been added to trace the lifecycle of stream events across the bounda
    - `Backend: emitting token #X -> ...`
 2. **Frontend Wasm**: Prints received event payloads directly to the browser console. Look for:
    - `Frontend: received chat-stream-chunk payload: ...` in the browser devtools console.
+
+---
+
+## 4. Local OpenAI-Compliant Server Testing (e.g., LM Studio)
+
+To test a local inference server directly using `curl`, run:
+```bash
+curl -s http://127.0.0.1:1234/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "ministral-3-3b-reasoning-2512",
+    "messages": [{"role": "user", "content": "say hi"}],
+    "stream": true
+  }'
+```
+
+This returns Server-Sent Event (SSE) chunks formatted as:
+```
+data: {"id":"chatcmpl-...","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}
+data: [DONE]
+```
+
+---
+
+## 5. Token Generation Speed Calculation (tokens/sec)
+
+### The Problem
+Previously, the generation speed (`tokens_per_sec`) was calculated by dividing the total tokens by the total request duration:
+$$\text{Tokens/sec} = \frac{\text{Token Count}}{\text{Total Request Time}}$$
+This was incorrect because the total request time includes prefill latency, connection time, and network handshake overhead. This resulted in reporting much lower throughput (e.g., 15 tok/sec instead of the actual 30+ tok/sec generation speed).
+
+### The Solution
+We changed the calculation to divide token count by the **active generation duration** (time elapsed between the arrival of the first token and the final chunk):
+$$\text{Tokens/sec} = \frac{\text{Token Count}}{\text{Total Request Time} - \text{Time To First Token (TTFT)}}$$
+
+Implementation in [api_client.rs](file:///Users/bran/src/play/chatui/src-tauri/src/api_client.rs):
+```rust
+let total_duration = start_time.elapsed();
+let tokens_per_sec = if let Some(first_tok_dur) = first_token_time {
+    let gen_duration = total_duration.saturating_sub(first_tok_dur);
+    if gen_duration.as_secs_f32() > 0.0 {
+        token_count as f32 / gen_duration.as_secs_f32()
+    } else {
+        0.0
+    }
+} else {
+    0.0
+};
+```
+This reflects the true generation throughput of active model inference.

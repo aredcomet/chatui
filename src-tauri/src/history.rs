@@ -2,12 +2,18 @@ use shared::ChatConversation;
 use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
+use crate::settings;
 
 fn get_history_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let mut dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data directory: {}", e))?;
+    let settings = settings::load_settings(app);
+    let mut dir = if let Some(ref path_str) = settings.custom_storage_path {
+        PathBuf::from(path_str)
+    } else {
+        app.path()
+            .app_data_dir()
+            .map_err(|e| format!("Failed to get app data directory: {}", e))?
+    };
+    
     dir.push("history");
     if !dir.exists() {
         fs::create_dir_all(&dir)
@@ -19,10 +25,17 @@ fn get_history_dir(app: &AppHandle) -> Result<PathBuf, String> {
 pub fn save_conversation(app: &AppHandle, conversation: ChatConversation) -> Result<(), String> {
     let dir = get_history_dir(app)?;
     let file_path = dir.join(format!("{}.json", conversation.id));
+    let temp_path = file_path.with_extension("tmp");
+    
     let json = serde_json::to_string_pretty(&conversation)
         .map_err(|e| format!("Failed to serialize conversation: {}", e))?;
-    fs::write(file_path, json)
-        .map_err(|e| format!("Failed to write conversation file: {}", e))?;
+        
+    // Atomic Write: Write to .tmp first, then rename to .json to prevent corruption on crash
+    fs::write(&temp_path, json)
+        .map_err(|e| format!("Failed to write temp conversation file: {}", e))?;
+    fs::rename(temp_path, file_path)
+        .map_err(|e| format!("Failed to commit conversation file: {}", e))?;
+        
     Ok(())
 }
 
@@ -59,3 +72,4 @@ pub fn delete_conversation(app: &AppHandle, id: &str) -> Result<(), String> {
     }
     Ok(())
 }
+

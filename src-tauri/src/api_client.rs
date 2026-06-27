@@ -1,7 +1,7 @@
 use futures_util::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
-use shared::{ApiConfig, ChatMessage, ContentPart, MessageRole, Provider, StreamPayload};
+use shared::{ApiConfig, ChatMessage, ContentBlock, MessageRole, Provider, StreamPayload};
 use tauri::Emitter;
 
 // OpenAI API request structures
@@ -166,6 +166,21 @@ struct GeminiStreamPart {
     text: Option<String>,
 }
 
+fn get_base64_from_path(path_str: &str) -> String {
+    if path_str.starts_with("data:") {
+        if let Some(pos) = path_str.find(",") {
+            path_str[pos + 1..].to_string()
+        } else {
+            path_str.to_string()
+        }
+    } else if let Ok(bytes) = std::fs::read(path_str) {
+        use base64::Engine;
+        base64::prelude::BASE64_STANDARD.encode(&bytes)
+    } else {
+        String::new()
+    }
+}
+
 fn convert_to_openai_message(msg: &ChatMessage) -> OpenAiMessage {
     let role = match msg.role {
         MessageRole::System => "system".to_string(),
@@ -178,29 +193,45 @@ fn convert_to_openai_message(msg: &ChatMessage) -> OpenAiMessage {
         None => &msg.versions[0].content,
     };
 
-    let content = if msg_content.len() == 1 {
-        match &msg_content[0] {
-            ContentPart::Text { text } => OpenAiContent::Text(text.clone()),
-            ContentPart::Image { mime_type, base64 } => {
-                OpenAiContent::Parts(vec![OpenAiContentPart::ImageUrl {
+    let mut parts = Vec::new();
+    for block in msg_content {
+        match block {
+            ContentBlock::Text { text } => {
+                parts.push(OpenAiContentPart::Text { text: text.clone() });
+            }
+            ContentBlock::Reasoning { text } => {
+                parts.push(OpenAiContentPart::Text {
+                    text: format!("<think>\n{}\n</think>\n", text),
+                });
+            }
+            ContentBlock::Image { path, mime_type } => {
+                let base64_data = get_base64_from_path(path);
+                parts.push(OpenAiContentPart::ImageUrl {
                     image_url: OpenAiImageUrl {
-                        url: format!("data:{};base64,{}", mime_type, base64),
+                        url: format!("data:{};base64,{}", mime_type, base64_data),
                     },
-                }])
+                });
+            }
+            ContentBlock::Document { path, mime_type } => {
+                let path_desc = path.as_ref().map(|p| p.as_str()).unwrap_or("missing");
+                parts.push(OpenAiContentPart::Text {
+                    text: format!("[Document Attached: {} (type: {})]", path_desc, mime_type),
+                });
+            }
+            ContentBlock::Audio { path, duration_secs } => {
+                parts.push(OpenAiContentPart::Text {
+                    text: format!("[Audio Attached: {} (duration: {}s)]", path, duration_secs),
+                });
             }
         }
+    }
+
+    let content = if parts.len() == 1 {
+        match parts.remove(0) {
+            OpenAiContentPart::Text { text } => OpenAiContent::Text(text),
+            other => OpenAiContent::Parts(vec![other]),
+        }
     } else {
-        let parts = msg_content
-            .iter()
-            .map(|part| match part {
-                ContentPart::Text { text } => OpenAiContentPart::Text { text: text.clone() },
-                ContentPart::Image { mime_type, base64 } => OpenAiContentPart::ImageUrl {
-                    image_url: OpenAiImageUrl {
-                        url: format!("data:{};base64,{}", mime_type, base64),
-                    },
-                },
-            })
-            .collect();
         OpenAiContent::Parts(parts)
     };
 
@@ -213,8 +244,8 @@ fn convert_to_anthropic(
     temperature: f32,
     max_tokens: Option<u32>,
 ) -> AnthropicRequest {
-    let mut system_prompts = Vec::new();
     let mut anthropic_messages = Vec::new();
+    let mut system_prompts = Vec::new();
 
     for msg in messages {
         match msg.role {
@@ -232,37 +263,47 @@ fn convert_to_anthropic(
                     None => &msg.versions[0].content,
                 };
 
-                let content = if msg_content.len() == 1 {
-                    match &msg_content[0] {
-                        ContentPart::Text { text } => AnthropicContent::Text(text.clone()),
-                        ContentPart::Image { mime_type, base64 } => {
-                            AnthropicContent::Parts(vec![AnthropicContentPart::Image {
+                let mut parts = Vec::new();
+                for block in msg_content {
+                    match block {
+                        ContentBlock::Text { text } => {
+                            parts.push(AnthropicContentPart::Text { text: text.clone() });
+                        }
+                        ContentBlock::Reasoning { text } => {
+                            parts.push(AnthropicContentPart::Text {
+                                text: format!("<think>\n{}\n</think>\n", text),
+                            });
+                        }
+                        ContentBlock::Image { path, mime_type } => {
+                            let base64_data = get_base64_from_path(path);
+                            parts.push(AnthropicContentPart::Image {
                                 source: AnthropicImageSource {
                                     source_type: "base64".to_string(),
                                     media_type: mime_type.clone(),
-                                    data: base64.clone(),
+                                    data: base64_data,
                                 },
-                            }])
+                            });
+                        }
+                        ContentBlock::Document { path, mime_type } => {
+                            let path_desc = path.as_ref().map(|p| p.as_str()).unwrap_or("missing");
+                            parts.push(AnthropicContentPart::Text {
+                                text: format!("[Document Attached: {} (type: {})]", path_desc, mime_type),
+                            });
+                        }
+                        ContentBlock::Audio { path, duration_secs } => {
+                            parts.push(AnthropicContentPart::Text {
+                                text: format!("[Audio Attached: {} (duration: {}s)]", path, duration_secs),
+                            });
                         }
                     }
+                }
+
+                let content = if parts.len() == 1 {
+                    match parts.remove(0) {
+                        AnthropicContentPart::Text { text } => AnthropicContent::Text(text),
+                        other => AnthropicContent::Parts(vec![other]),
+                    }
                 } else {
-                    let parts = msg_content
-                        .iter()
-                        .map(|part| match part {
-                            ContentPart::Text { text } => {
-                                AnthropicContentPart::Text { text: text.clone() }
-                            }
-                            ContentPart::Image { mime_type, base64 } => {
-                                AnthropicContentPart::Image {
-                                    source: AnthropicImageSource {
-                                        source_type: "base64".to_string(),
-                                        media_type: mime_type.clone(),
-                                        data: base64.clone(),
-                                    },
-                                }
-                            }
-                        })
-                        .collect();
                     AnthropicContent::Parts(parts)
                 };
 
@@ -294,7 +335,7 @@ fn convert_to_gemini(messages: &[ChatMessage], temperature: f32) -> GeminiReques
         let role = match msg.role {
             MessageRole::User => "user".to_string(),
             MessageRole::Assistant => "model".to_string(),
-            MessageRole::System => continue, // Prepend system message to first user msg below
+            MessageRole::System => continue,
         };
 
         let msg_content = match msg.versions.get(msg.active_version) {
@@ -304,14 +345,31 @@ fn convert_to_gemini(messages: &[ChatMessage], temperature: f32) -> GeminiReques
 
         let parts = msg_content
             .iter()
-            .map(|part| match part {
-                ContentPart::Text { text } => GeminiPart::Text { text: text.clone() },
-                ContentPart::Image { mime_type, base64 } => GeminiPart::InlineData {
-                    inline_data: GeminiInlineData {
-                        mime_type: mime_type.clone(),
-                        data: base64.clone(),
-                    },
+            .map(|block| match block {
+                ContentBlock::Text { text } => GeminiPart::Text { text: text.clone() },
+                ContentBlock::Reasoning { text } => GeminiPart::Text {
+                    text: format!("<think>\n{}\n</think>\n", text),
                 },
+                ContentBlock::Image { path, mime_type } => {
+                    let base64_data = get_base64_from_path(path);
+                    GeminiPart::InlineData {
+                        inline_data: GeminiInlineData {
+                            mime_type: mime_type.clone(),
+                            data: base64_data,
+                        },
+                    }
+                }
+                ContentBlock::Document { path, mime_type } => {
+                    let path_desc = path.as_ref().map(|p| p.as_str()).unwrap_or("missing");
+                    GeminiPart::Text {
+                        text: format!("[Document Attached: {} (type: {})]", path_desc, mime_type),
+                    }
+                }
+                ContentBlock::Audio { path, duration_secs } => {
+                    GeminiPart::Text {
+                        text: format!("[Audio Attached: {} (duration: {}s)]", path, duration_secs),
+                    }
+                }
             })
             .collect();
 
@@ -1079,7 +1137,7 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared::{ChatMessage, MessageRole, ContentPart, MessageVersion};
+    use shared::{ChatMessage, MessageRole, ContentBlock, MessageVersion, MessageMetadata, Provider};
 
     #[test]
     fn test_convert_to_openai_message() {
@@ -1093,17 +1151,22 @@ mod tests {
 
         // Multimodal image message
         let img_msg = ChatMessage {
+            id: "test-id".to_string(),
             role: MessageRole::User,
             versions: vec![MessageVersion {
                 content: vec![
-                    ContentPart::Text { text: "Look at this:".to_string() },
-                    ContentPart::Image { mime_type: "image/png".to_string(), base64: "dGVzdA==".to_string() },
+                    ContentBlock::Text { text: "Look at this:".to_string() },
+                    ContentBlock::Image { path: "data:image/png;base64,dGVzdA==".to_string(), mime_type: "image/png".to_string() },
                 ],
-                ttft_ms: None,
-                tokens_per_sec: None,
-                total_tokens: None,
-                stop_reason: None,
-                reasoning_duration_ms: None,
+                metadata: MessageMetadata {
+                    model: "test-model".to_string(),
+                    provider: Provider::OpenAI,
+                    connection_id: "test-conn".to_string(),
+                    created_at: chrono::Utc::now(),
+                    ttft_ms: None,
+                    tokens_per_sec: None,
+                    stop_reason: None,
+                },
             }],
             active_version: 0,
         };
@@ -1126,6 +1189,7 @@ mod tests {
             _ => panic!("Expected OpenAiContent::Parts"),
         }
     }
+
 
     #[test]
     fn test_convert_to_anthropic() {

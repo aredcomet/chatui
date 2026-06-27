@@ -2,6 +2,7 @@ mod api_client;
 mod connections_store;
 mod credentials;
 mod history;
+mod settings;
 
 use shared::{ApiConfig, ChatConversation, ChatMessage, Connection, Provider};
 use std::collections::HashMap;
@@ -155,6 +156,16 @@ fn delete_conversation(app: tauri::AppHandle, id: String) -> Result<(), String> 
     history::delete_conversation(&app, &id)
 }
 
+#[tauri::command]
+fn get_settings(app: tauri::AppHandle) -> settings::AppSettings {
+    settings::load_settings(&app)
+}
+
+#[tauri::command]
+fn save_settings(app: tauri::AppHandle, settings: settings::AppSettings) -> Result<(), String> {
+    settings::save_settings(&app, &settings)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -172,7 +183,9 @@ pub fn run() {
             fetch_models,
             save_connections,
             load_connections,
-            delete_connection
+            delete_connection,
+            get_settings,
+            save_settings
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

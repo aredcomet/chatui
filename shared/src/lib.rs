@@ -61,41 +61,81 @@ pub enum MessageRole {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "lowercase")]
-pub enum ContentPart {
-    Text { text: String },
-    Image { mime_type: String, base64: String },
+pub enum ContentBlock {
+    Text {
+        text: String,
+    },
+    Reasoning {
+        text: String,
+    },
+    Image {
+        path: String,
+        mime_type: String,
+    },
+    Document {
+        path: Option<String>,
+        mime_type: String,
+    },
+    Audio {
+        path: String,
+        duration_secs: f32,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MessageMetadata {
+    pub model: String,
+    pub provider: Provider,
+    pub connection_id: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub ttft_ms: Option<u64>,
+    pub tokens_per_sec: Option<f32>,
+    pub stop_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MessageVersion {
-    pub content: Vec<ContentPart>,
-    pub ttft_ms: Option<u64>,
-    pub tokens_per_sec: Option<f32>,
-    pub total_tokens: Option<u32>,
-    pub stop_reason: Option<String>,
-    #[serde(default)]
-    pub reasoning_duration_ms: Option<u64>,
+    pub content: Vec<ContentBlock>,
+    pub metadata: MessageMetadata,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ChatMessage {
+    pub id: String,
     pub role: MessageRole,
     pub versions: Vec<MessageVersion>,
     pub active_version: usize,
 }
 
+// Backward compatibility helper for deserializing old ChatMessages
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum ChatMessageDeHelper {
     Current {
+        id: String,
         role: MessageRole,
         versions: Vec<MessageVersion>,
         active_version: usize,
     },
     Legacy {
         role: MessageRole,
-        content: Vec<ContentPart>,
+        content: Vec<LegacyContentPart>,
+        #[serde(default)]
+        ttft_ms: Option<u64>,
+        #[serde(default)]
+        tokens_per_sec: Option<f32>,
+        #[serde(default)]
+        stop_reason: Option<String>,
+        #[serde(default)]
+        reasoning_duration_ms: Option<u64>,
     },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum LegacyContentPart {
+    Text { text: String },
+    Image { mime_type: String, base64: String },
 }
 
 impl<'de> Deserialize<'de> for ChatMessage {
@@ -106,41 +146,88 @@ impl<'de> Deserialize<'de> for ChatMessage {
         let helper = ChatMessageDeHelper::deserialize(deserializer)?;
         match helper {
             ChatMessageDeHelper::Current {
+                id,
                 role,
                 versions,
                 active_version,
             } => Ok(ChatMessage {
+                id,
                 role,
                 versions,
                 active_version,
             }),
-            ChatMessageDeHelper::Legacy { role, content } => Ok(ChatMessage {
+            ChatMessageDeHelper::Legacy {
                 role,
-                versions: vec![MessageVersion {
-                    content,
-                    ttft_ms: None,
-                    tokens_per_sec: None,
-                    total_tokens: None,
-                    stop_reason: None,
-                    reasoning_duration_ms: None,
-                }],
-                active_version: 0,
-            }),
+                content,
+                ttft_ms,
+                tokens_per_sec,
+                stop_reason,
+                reasoning_duration_ms,
+            } => {
+                let mut content_blocks = Vec::new();
+                for part in content {
+                    match part {
+                        LegacyContentPart::Text { text } => {
+                            // If it has think tags, we might separate them later, but let's keep it simple
+                            content_blocks.push(ContentBlock::Text { text });
+                        }
+                        LegacyContentPart::Image { mime_type, base64 } => {
+                            // Legacy images were base64 inline strings, map to path empty for now
+                            content_blocks.push(ContentBlock::Image {
+                                path: format!("data:{};base64,{}", mime_type, base64),
+                                mime_type,
+                            });
+                        }
+                    }
+                }
+                
+                if let Some(ms) = reasoning_duration_ms {
+                    content_blocks.push(ContentBlock::Reasoning {
+                        text: format!("Thinking took {}ms", ms),
+                    });
+                }
+
+                let dummy_metadata = MessageMetadata {
+                    model: "legacy".to_string(),
+                    provider: Provider::OpenAI,
+                    connection_id: "legacy".to_string(),
+                    created_at: chrono::Utc::now(),
+                    ttft_ms,
+                    tokens_per_sec,
+                    stop_reason,
+                };
+
+                Ok(ChatMessage {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    role,
+                    versions: vec![MessageVersion {
+                        content: content_blocks,
+                        metadata: dummy_metadata,
+                    }],
+                    active_version: 0,
+                })
+            }
         }
     }
 }
 
 impl ChatMessage {
     pub fn new_text(role: MessageRole, text: String) -> Self {
+        let metadata = MessageMetadata {
+            model: "unknown".to_string(),
+            provider: Provider::OpenAI,
+            connection_id: "unknown".to_string(),
+            created_at: chrono::Utc::now(),
+            ttft_ms: None,
+            tokens_per_sec: None,
+            stop_reason: None,
+        };
         Self {
+            id: uuid::Uuid::new_v4().to_string(),
             role,
             versions: vec![MessageVersion {
-                content: vec![ContentPart::Text { text }],
-                ttft_ms: None,
-                tokens_per_sec: None,
-                total_tokens: None,
-                stop_reason: None,
-                reasoning_duration_ms: None,
+                content: vec![ContentBlock::Text { text }],
+                metadata,
             }],
             active_version: 0,
         }
@@ -150,8 +237,8 @@ impl ChatMessage {
         if let Some(version) = self.versions.get(self.active_version) {
             version.content
                 .iter()
-                .filter_map(|part| match part {
-                    ContentPart::Text { text } => Some(text.clone()),
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.clone()),
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -175,8 +262,9 @@ pub struct ApiConfig {
 pub struct ChatConversation {
     pub id: String,
     pub title: String,
-    pub model: String,
-    pub provider: Provider,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub folder_id: Option<String>,
+    pub system_prompt: Option<String>,
     pub messages: Vec<ChatMessage>,
     pub updated_at: u64,
     #[serde(default)]
@@ -196,3 +284,45 @@ pub struct StreamPayload {
     #[serde(default)]
     pub reasoning_duration_ms: Option<u64>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_current_serialization_roundtrip() {
+        let msg = ChatMessage::new_text(MessageRole::User, "Hello world".to_string());
+        let serialized = serde_json::to_string(&msg).unwrap();
+        let deserialized: ChatMessage = serde_json::from_str(&serialized).unwrap();
+        
+        assert_eq!(msg.id, deserialized.id);
+        assert_eq!(msg.role, deserialized.role);
+        assert_eq!(msg.get_text(), deserialized.get_text());
+    }
+
+    #[test]
+    fn test_legacy_deserialization() {
+        let legacy_json = r#"{
+            "role": "user",
+            "content": [
+                { "type": "text", "text": "Hello legacy world" }
+            ],
+            "reasoning_duration_ms": 1500
+        }"#;
+
+        let deserialized: ChatMessage = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(deserialized.role, MessageRole::User);
+        assert_eq!(deserialized.get_text(), "Hello legacy world");
+        
+        // Assert reasoning block was correctly parsed and pushed
+        assert_eq!(deserialized.versions[0].content.len(), 2);
+        match &deserialized.versions[0].content[1] {
+            ContentBlock::Reasoning { text } => {
+                assert!(text.contains("1500ms"));
+            }
+            _ => panic!("Expected ContentBlock::Reasoning"),
+        }
+    }
+}
+
+

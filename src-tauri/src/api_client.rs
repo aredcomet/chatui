@@ -473,6 +473,7 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
     config: ApiConfig,
     messages: Vec<ChatMessage>,
     reasoning_config: Option<shared::ModelReasoningConfig>,
+    mut cancel_rx: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<(), String> {
     let client = reqwest::Client::new();
     let conversation_id_clone = conversation_id.clone();
@@ -547,133 +548,146 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
                 let mut stream = response.bytes_stream();
                 let mut buffer = Vec::new();
 
-                while let Some(chunk_res) = stream.next().await {
-                    let chunk = chunk_res.map_err(|e| format!("Stream chunk read failed: {}", e))?;
-                    println!("Backend: received chunk of size {} bytes", chunk.len());
-                    buffer.extend_from_slice(&chunk);
-
-                    while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
-                        let line_bytes = buffer.drain(..pos + 1).collect::<Vec<u8>>();
-                        let line = String::from_utf8_lossy(&line_bytes);
-                        let line = line.trim();
-                        if line.is_empty() {
-                            continue;
+                loop {
+                    tokio::select! {
+                        _ = &mut cancel_rx => {
+                            println!("Backend: stream cancelled for conversation {}", conversation_id);
+                            break;
                         }
+                        chunk_opt = stream.next() => {
+                            match chunk_opt {
+                                Some(chunk_res) => {
+                                    let chunk = chunk_res.map_err(|e| format!("Stream chunk read failed: {}", e))?;
+                                    println!("Backend: received chunk of size {} bytes", chunk.len());
+                                    buffer.extend_from_slice(&chunk);
 
-                        println!("Backend: processing line -> {:?}", line);
-
-                        if line.starts_with("data:") {
-                            let data = line["data:".len()..].trim();
-                            if data == "[DONE]" {
-                                println!("Backend: received [DONE] signal");
-                                break;
-                            }
-
-                            match serde_json::from_str::<OpenAiStreamChunk>(data) {
-                                Ok(chunk) => {
-                                    if let Some(choice) = chunk.choices.first() {
-                                        // 1. Process reasoning content if present
-                                        if thinking_enabled {
-                                            if let Some(reasoning) = &choice.delta.reasoning_content {
-                                                if !reasoning.is_empty() {
-                                                    let mut emit_text = String::new();
-                                                    if !in_thinking {
-                                                        in_thinking = true;
-                                                        emit_text.push_str("<think>");
-                                                    }
-                                                    emit_text.push_str(reasoning);
-                                                    
-                                                    if first_token_time.is_none() {
-                                                        first_token_time = Some(start_time.elapsed());
-                                                    }
-                                                    token_count += 1;
-                                                    
-                                                    println!("Backend: emitting reasoning token #{} -> {:?}", token_count, reasoning);
-                                                    window
-                                                        .emit(
-                                                            "chat-stream-chunk",
-                                                            StreamPayload {
-                                                                conversation_id: conversation_id.clone(),
-                                                                text: emit_text,
-                                                                done: false,
-                                                                error: None,
-                                                                ttft_ms: None,
-                                                                tokens_per_sec: None,
-                                                                total_tokens: None,
-                                                                stop_reason: None,
-                                                                reasoning_duration_ms: None,
-                                                            },
-                                                        )
-                                                        .map_err(|e| e.to_string())?;
-                                                    
-                                                    if let Some(finish) = &choice.finish_reason {
-                                                        stop_reason = Some(finish.clone());
-                                                    }
-                                                    continue;
-                                                }
-                                            }
+                                    while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
+                                        let line_bytes = buffer.drain(..pos + 1).collect::<Vec<u8>>();
+                                        let line = String::from_utf8_lossy(&line_bytes);
+                                        let line = line.trim();
+                                        if line.is_empty() {
+                                            continue;
                                         }
 
-                                        // 2. Process normal content
-                                        if let Some(content) = &choice.delta.content {
-                                            let mut is_content_transition = false;
-                                            if thinking_enabled {
-                                                is_content_transition = true;
-                                            } else {
-                                                let mut end_tag = "</think>".to_string();
-                                                if let Some(rc) = &reasoning_config {
-                                                    if rc.enabled && rc.is_raw_stream {
-                                                        end_tag = rc.end_tag.clone();
+                                        println!("Backend: processing line -> {:?}", line);
+
+                                        if line.starts_with("data:") {
+                                            let data = line["data:".len()..].trim();
+                                            if data == "[DONE]" {
+                                                println!("Backend: received [DONE] signal");
+                                                break;
+                                            }
+
+                                            match serde_json::from_str::<OpenAiStreamChunk>(data) {
+                                                Ok(chunk) => {
+                                                    if let Some(choice) = chunk.choices.first() {
+                                                        // 1. Process reasoning content if present
+                                                        if thinking_enabled {
+                                                            if let Some(reasoning) = &choice.delta.reasoning_content {
+                                                                if !reasoning.is_empty() {
+                                                                    let mut emit_text = String::new();
+                                                                    if !in_thinking {
+                                                                        in_thinking = true;
+                                                                        emit_text.push_str("<think>");
+                                                                    }
+                                                                    emit_text.push_str(reasoning);
+                                                                    
+                                                                    if first_token_time.is_none() {
+                                                                        first_token_time = Some(start_time.elapsed());
+                                                                    }
+                                                                    token_count += 1;
+                                                                    
+                                                                    println!("Backend: emitting reasoning token #{} -> {:?}", token_count, reasoning);
+                                                                    window
+                                                                        .emit(
+                                                                            "chat-stream-chunk",
+                                                                            StreamPayload {
+                                                                                conversation_id: conversation_id.clone(),
+                                                                                text: emit_text,
+                                                                                done: false,
+                                                                                error: None,
+                                                                                ttft_ms: None,
+                                                                                tokens_per_sec: None,
+                                                                                total_tokens: None,
+                                                                                stop_reason: None,
+                                                                                reasoning_duration_ms: None,
+                                                                            },
+                                                                        )
+                                                                        .map_err(|e| e.to_string())?;
+                                                                    
+                                                                    if let Some(finish) = &choice.finish_reason {
+                                                                        stop_reason = Some(finish.clone());
+                                                                    }
+                                                                    continue;
+                                                                }
+                                                            }
+                                                        }
+
+                                                        // 2. Process normal content
+                                                        if let Some(content) = &choice.delta.content {
+                                                            let mut is_content_transition = false;
+                                                            if thinking_enabled {
+                                                                is_content_transition = true;
+                                                            } else {
+                                                                let mut end_tag = "</think>".to_string();
+                                                                if let Some(rc) = &reasoning_config {
+                                                                    if rc.enabled && rc.is_raw_stream {
+                                                                        end_tag = rc.end_tag.clone();
+                                                                    }
+                                                                }
+                                                                if content.contains(&end_tag) {
+                                                                    is_content_transition = true;
+                                                                }
+                                                            }
+                                                            if is_content_transition && first_content_token_time.is_none() {
+                                                                first_content_token_time = Some(start_time.elapsed());
+                                                            }
+
+                                                            let mut emit_text = String::new();
+                                                            if in_thinking {
+                                                                in_thinking = false;
+                                                                emit_text.push_str("</think>\n");
+                                                            }
+                                                            emit_text.push_str(content);
+
+                                                            if first_token_time.is_none() {
+                                                                first_token_time = Some(start_time.elapsed());
+                                                            }
+                                                            token_count += 1;
+                                                            println!("Backend: emitting content token #{} -> {:?}", token_count, content);
+                                                            window
+                                                                .emit(
+                                                                    "chat-stream-chunk",
+                                                                    StreamPayload {
+                                                                        conversation_id: conversation_id.clone(),
+                                                                        text: emit_text,
+                                                                        done: false,
+                                                                        error: None,
+                                                                        ttft_ms: None,
+                                                                        tokens_per_sec: None,
+                                                                        total_tokens: None,
+                                                                        stop_reason: None,
+                                                                        reasoning_duration_ms: None,
+                                                                    },
+                                                                )
+                                                                .map_err(|e| e.to_string())?;
+                                                        }
+                                                        if let Some(finish) = &choice.finish_reason {
+                                                            stop_reason = Some(finish.clone());
+                                                        }
                                                     }
                                                 }
-                                                if content.contains(&end_tag) {
-                                                    is_content_transition = true;
+                                                Err(e) => {
+                                                    println!("Backend: failed to parse JSON in line {:?}: {}", line, e);
                                                 }
                                             }
-                                            if is_content_transition && first_content_token_time.is_none() {
-                                                first_content_token_time = Some(start_time.elapsed());
-                                            }
-
-                                            let mut emit_text = String::new();
-                                            if in_thinking {
-                                                in_thinking = false;
-                                                emit_text.push_str("</think>\n");
-                                            }
-                                            emit_text.push_str(content);
-
-                                            if first_token_time.is_none() {
-                                                first_token_time = Some(start_time.elapsed());
-                                            }
-                                            token_count += 1;
-                                            println!("Backend: emitting content token #{} -> {:?}", token_count, content);
-                                            window
-                                                .emit(
-                                                    "chat-stream-chunk",
-                                                    StreamPayload {
-                                                        conversation_id: conversation_id.clone(),
-                                                        text: emit_text,
-                                                        done: false,
-                                                        error: None,
-                                                        ttft_ms: None,
-                                                        tokens_per_sec: None,
-                                                        total_tokens: None,
-                                                        stop_reason: None,
-                                                        reasoning_duration_ms: None,
-                                                    },
-                                                )
-                                                .map_err(|e| e.to_string())?;
-                                        }
-                                        if let Some(finish) = &choice.finish_reason {
-                                            stop_reason = Some(finish.clone());
+                                        } else {
+                                            println!("Backend: line did not start with data:");
                                         }
                                     }
                                 }
-                                Err(e) => {
-                                    println!("Backend: failed to parse JSON in line {:?}: {}", line, e);
-                                }
+                                None => break,
                             }
-                        } else {
-                            println!("Backend: line did not start with data:");
                         }
                     }
                 }
@@ -780,53 +794,66 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
                 let mut stream = response.bytes_stream();
                 let mut buffer = Vec::new();
 
-                while let Some(chunk_res) = stream.next().await {
-                    let chunk = chunk_res.map_err(|e| format!("Stream chunk read failed: {}", e))?;
-                    buffer.extend_from_slice(&chunk);
-
-                    while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
-                        let line_bytes = buffer.drain(..pos + 1).collect::<Vec<u8>>();
-                        let line = String::from_utf8_lossy(&line_bytes);
-                        let line = line.trim();
-                        if line.is_empty() {
-                            continue;
+                loop {
+                    tokio::select! {
+                        _ = &mut cancel_rx => {
+                            println!("Backend: stream cancelled for conversation {}", conversation_id);
+                            break;
                         }
+                        chunk_opt = stream.next() => {
+                            match chunk_opt {
+                                Some(chunk_res) => {
+                                    let chunk = chunk_res.map_err(|e| format!("Stream chunk read failed: {}", e))?;
+                                    buffer.extend_from_slice(&chunk);
 
-                        if line.starts_with("data: ") {
-                            let data = &line[6..];
-                            if let Ok(chunk) = serde_json::from_str::<AnthropicStreamChunk>(data) {
-                                if chunk.chunk_type == "content_block_delta" {
-                                    if let Some(delta) = &chunk.delta {
-                                        if let Some(text) = &delta.text {
-                                            if first_token_time.is_none() {
-                                                first_token_time = Some(start_time.elapsed());
-                                            }
-                                            token_count += 1;
-                                            window
-                                                .emit(
-                                                    "chat-stream-chunk",
-                                                    StreamPayload {
-                                                        conversation_id: conversation_id.clone(),
-                                                        text: text.clone(),
-                                                        done: false,
-                                                        error: None,
-                                                        ttft_ms: None,
-                                                        tokens_per_sec: None,
-                                                        total_tokens: None,
-                                                        stop_reason: None,
-                                                        reasoning_duration_ms: None,
-                                                    },
-                                                )
-                                                .map_err(|e| e.to_string())?;
+                                    while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
+                                        let line_bytes = buffer.drain(..pos + 1).collect::<Vec<u8>>();
+                                        let line = String::from_utf8_lossy(&line_bytes);
+                                        let line = line.trim();
+                                        if line.is_empty() {
+                                            continue;
                                         }
-                                    }
-                                } else if chunk.chunk_type == "message_delta" {
-                                    if let Some(delta) = &chunk.delta {
-                                        if let Some(reason) = &delta.stop_reason {
-                                            stop_reason = Some(reason.clone());
+
+                                        if line.starts_with("data: ") {
+                                            let data = &line[6..];
+                                            if let Ok(chunk) = serde_json::from_str::<AnthropicStreamChunk>(data) {
+                                                if chunk.chunk_type == "content_block_delta" {
+                                                    if let Some(delta) = &chunk.delta {
+                                                        if let Some(text) = &delta.text {
+                                                            if first_token_time.is_none() {
+                                                                first_token_time = Some(start_time.elapsed());
+                                                            }
+                                                            token_count += 1;
+                                                            window
+                                                                .emit(
+                                                                    "chat-stream-chunk",
+                                                                    StreamPayload {
+                                                                        conversation_id: conversation_id.clone(),
+                                                                        text: text.clone(),
+                                                                        done: false,
+                                                                        error: None,
+                                                                        ttft_ms: None,
+                                                                        tokens_per_sec: None,
+                                                                        total_tokens: None,
+                                                                        stop_reason: None,
+                                                                        reasoning_duration_ms: None,
+                                                                    },
+                                                                )
+                                                                .map_err(|e| e.to_string())?;
+                                                        }
+                                                    }
+                                                } else if chunk.chunk_type == "message_delta" {
+                                                    if let Some(delta) = &chunk.delta {
+                                                        if let Some(reason) = &delta.stop_reason {
+                                                            stop_reason = Some(reason.clone());
+                                                        }
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
+                                None => break,
                             }
                         }
                     }
@@ -890,68 +917,81 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
                 let mut stream = response.bytes_stream();
                 let mut buffer = Vec::new();
 
-                while let Some(chunk_res) = stream.next().await {
-                    let chunk = chunk_res.map_err(|e| format!("Stream chunk read failed: {}", e))?;
-                    buffer.extend_from_slice(&chunk);
+                loop {
+                    tokio::select! {
+                        _ = &mut cancel_rx => {
+                            println!("Backend: stream cancelled for conversation {}", conversation_id);
+                            break;
+                        }
+                        chunk_opt = stream.next() => {
+                            match chunk_opt {
+                                Some(chunk_res) => {
+                                    let chunk = chunk_res.map_err(|e| format!("Stream chunk read failed: {}", e))?;
+                                    buffer.extend_from_slice(&chunk);
 
-                    while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
-                        let line_bytes = buffer.drain(..pos + 1).collect::<Vec<u8>>();
-                        let line = String::from_utf8_lossy(&line_bytes);
-                        let mut chunk_text = line.trim();
-                        if chunk_text.is_empty() {
-                            continue;
-                        }
+                                    while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
+                                        let line_bytes = buffer.drain(..pos + 1).collect::<Vec<u8>>();
+                                        let line = String::from_utf8_lossy(&line_bytes);
+                                        let mut chunk_text = line.trim();
+                                        if chunk_text.is_empty() {
+                                            continue;
+                                        }
 
-                        // Gemini REST stream items are items of a JSON array, e.g. [, { ... }]
-                        if chunk_text.starts_with('[') {
-                            chunk_text = &chunk_text[1..];
-                        }
-                        if chunk_text.starts_with(',') {
-                            chunk_text = &chunk_text[1..];
-                        }
-                        if chunk_text.ends_with(']') {
-                            chunk_text = &chunk_text[..chunk_text.len() - 1];
-                        }
-                        let chunk_text = chunk_text.trim();
-                        if chunk_text.is_empty() {
-                            continue;
-                        }
+                                        // Gemini REST stream items are items of a JSON array, e.g. [, { ... }]
+                                        if chunk_text.starts_with('[') {
+                                            chunk_text = &chunk_text[1..];
+                                        }
+                                        if chunk_text.starts_with(',') {
+                                            chunk_text = &chunk_text[1..];
+                                        }
+                                        if chunk_text.ends_with(']') {
+                                            chunk_text = &chunk_text[..chunk_text.len() - 1];
+                                        }
+                                        let chunk_text = chunk_text.trim();
+                                        if chunk_text.is_empty() {
+                                            continue;
+                                        }
 
-                        if let Ok(chunk) = serde_json::from_str::<GeminiStreamChunk>(chunk_text) {
-                            if let Some(candidates) = chunk.candidates {
-                                if let Some(candidate) = candidates.first() {
-                                    if let Some(reason) = &candidate.finish_reason {
-                                        stop_reason = Some(reason.clone());
-                                    }
-                                    if let Some(content) = &candidate.content {
-                                        if let Some(parts) = &content.parts {
-                                            if let Some(part) = parts.first() {
-                                                if let Some(text) = &part.text {
-                                                    if first_token_time.is_none() {
-                                                        first_token_time = Some(start_time.elapsed());
+                                        if let Ok(chunk) = serde_json::from_str::<GeminiStreamChunk>(chunk_text) {
+                                            if let Some(candidates) = chunk.candidates {
+                                                if let Some(candidate) = candidates.first() {
+                                                    if let Some(reason) = &candidate.finish_reason {
+                                                        stop_reason = Some(reason.clone());
                                                     }
-                                                    token_count += 1;
-                                                    window
-                                                        .emit(
-                                                            "chat-stream-chunk",
-                                                            StreamPayload {
-                                                                conversation_id: conversation_id.clone(),
-                                                                text: text.clone(),
-                                                                done: false,
-                                                                error: None,
-                                                                ttft_ms: None,
-                                                                tokens_per_sec: None,
-                                                                total_tokens: None,
-                                                                stop_reason: None,
-                                                                reasoning_duration_ms: None,
-                                                            },
-                                                        )
-                                                        .map_err(|e| e.to_string())?;
+                                                    if let Some(content) = &candidate.content {
+                                                        if let Some(parts) = &content.parts {
+                                                            if let Some(part) = parts.first() {
+                                                                if let Some(text) = &part.text {
+                                                                    if first_token_time.is_none() {
+                                                                        first_token_time = Some(start_time.elapsed());
+                                                                    }
+                                                                    token_count += 1;
+                                                                    window
+                                                                        .emit(
+                                                                            "chat-stream-chunk",
+                                                                            StreamPayload {
+                                                                                conversation_id: conversation_id.clone(),
+                                                                                text: text.clone(),
+                                                                                done: false,
+                                                                                error: None,
+                                                                                ttft_ms: None,
+                                                                                tokens_per_sec: None,
+                                                                                total_tokens: None,
+                                                                                stop_reason: None,
+                                                                                reasoning_duration_ms: None,
+                                                                            },
+                                                                        )
+                                                                        .map_err(|e| e.to_string())?;
+                                                                }
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
                                     }
                                 }
+                                None => break,
                             }
                         }
                     }
@@ -1251,6 +1291,7 @@ mod tests {
         };
         let messages = vec![ChatMessage::new_text(MessageRole::User, "Hello".to_string())];
 
+        let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
         let res = stream_chat_completion(
             window,
             "test-conv-id".to_string(),
@@ -1259,6 +1300,7 @@ mod tests {
             config,
             messages,
             None,
+            cancel_rx,
         ).await;
 
         assert!(res.is_ok(), "Mock stream_chat_completion failed: {:?}", res);

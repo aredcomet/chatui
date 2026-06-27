@@ -6,6 +6,7 @@ use shared::{
     StreamPayload, MessageVersion, ModelReasoningConfig,
 };
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 
 #[wasm_bindgen]
 extern "C" {
@@ -66,6 +67,11 @@ struct SaveConversationArgs {
 #[derive(Serialize)]
 struct DeleteConversationArgs {
     id: String,
+}
+
+#[derive(Serialize)]
+struct CancelStreamArgs {
+    conversation_id: String,
 }
 
 fn read_file_as_data_url(file: &web_sys::File) -> Result<js_sys::Promise, JsValue> {
@@ -492,6 +498,7 @@ pub fn App() -> impl IntoView {
     let (conversations, set_conversations) = signal(Vec::<ChatConversation>::new());
     let (current_conversation_id, set_current_conversation_id) = signal(None::<String>);
     let (messages, set_messages) = signal(Vec::<ChatMessage>::new());
+    let pending_messages = StoredValue::new(None::<Vec<ChatMessage>>);
     let (input_text, set_input_text) = signal(String::new());
     let (attached_image, set_attached_image) = signal(None::<(String, String)>);
     // Sidebar rename state
@@ -568,6 +575,20 @@ pub fn App() -> impl IntoView {
         }
     });
 
+    let is_scroll_at_bottom = move || -> bool {
+        if let Some(window) = web_sys::window() {
+            if let Some(document) = window.document() {
+                if let Some(el) = document.get_element_by_id("chat-messages-container") {
+                    let scroll_top = el.scroll_top();
+                    let scroll_height = el.scroll_height();
+                    let client_height = el.client_height();
+                    return scroll_height - scroll_top - client_height < 120;
+                }
+            }
+        }
+        true
+    };
+
     // Scroll helper
     let scroll_chat_to_bottom = move || {
         if let Some(window) = web_sys::window() {
@@ -604,6 +625,32 @@ pub fn App() -> impl IntoView {
             }
         });
     };
+
+    // Periodic synchronization task for buffered streaming chunks to prevent UI jerkiness/lag
+    Effect::new(move |_| {
+        let pending = pending_messages;
+        let is_scroll = is_scroll_at_bottom;
+        let scroll_bottom = scroll_chat_to_bottom;
+        
+        let cb = Closure::wrap(Box::new(move || {
+            if let Some(msgs) = pending.get_value() {
+                let should_scroll = is_scroll();
+                set_messages.set(msgs);
+                if should_scroll {
+                    scroll_bottom();
+                }
+                pending.set_value(None);
+            }
+        }) as Box<dyn FnMut()>);
+        
+        if let Some(window) = web_sys::window() {
+            let _ = window.set_interval_with_callback_and_timeout_and_arguments_0(
+                cb.as_ref().unchecked_ref(),
+                75, // update every 75ms (approx 13 updates per second)
+            );
+        }
+        cb.forget();
+    });
 
     // Effects for mounting and listening
     Effect::new(move |_| {
@@ -677,6 +724,8 @@ pub fn App() -> impl IntoView {
 
                 if payload.done {
                     set_is_streaming.set(false);
+                    pending_messages.set_value(None);
+                    
                     if let Some(last_msg) = current_msgs.last_mut() {
                         if last_msg.role == MessageRole::Assistant {
                             if let Some(version) = last_msg.versions.get_mut(last_msg.active_version) {
@@ -707,14 +756,21 @@ pub fn App() -> impl IntoView {
                         }
                         set_conversations.set(convos);
                     }
+                    
+                    let should_scroll = is_scroll_at_bottom();
                     set_messages.set(current_msgs);
+                    if should_scroll {
+                        scroll_chat_to_bottom();
+                    }
                 } else if let Some(err_msg) = payload.error {
                     set_is_streaming.set(false);
+                    pending_messages.set_value(None);
                     current_msgs.push(ChatMessage::new_text(
                         MessageRole::Assistant,
                         format!("⚠️ Error: {}", err_msg),
                     ));
                     set_messages.set(current_msgs);
+                    scroll_chat_to_bottom();
                 } else {
                     if let Some(last_msg) = current_msgs.last_mut() {
                         if last_msg.role == MessageRole::Assistant {
@@ -772,9 +828,8 @@ pub fn App() -> impl IntoView {
                             text,
                         ));
                     }
-                    set_messages.set(current_msgs);
+                    pending_messages.set_value(Some(current_msgs));
                 }
-                scroll_chat_to_bottom();
             }
         }
     });
@@ -2423,22 +2478,7 @@ pub fn App() -> impl IntoView {
                         }).collect::<Vec<_>>()}
                     </Show>
 
-                    // Loader when thinking
-                    <Show
-                        when=move || is_streaming.get()
-                        fallback=move || view! {}
-                    >
-                        <div class="w-full py-6 transition-all theme-transition">
-                            <div class="flex items-center gap-2 mb-2 text-xs font-semibold text-theme-muted uppercase tracking-wider select-none font-sans">
-                                "AI is thinking..."
-                            </div>
-                            <div class="flex space-x-1.5 py-2.5">
-                                <div class="w-2 h-2 bg-theme-accent rounded-full animate-bounce" style="animation-delay: 0ms"></div>
-                                <div class="w-2 h-2 bg-theme-accent rounded-full animate-bounce" style="animation-delay: 150ms"></div>
-                                <div class="w-2 h-2 bg-theme-accent rounded-full animate-bounce" style="animation-delay: 300ms"></div>
-                            </div>
-                        </div>
-                    </Show>
+                    // Loader when thinking is now handled in-message via ThinkingBlock
                 </div>
 
                 // Bottom Prompt Box / Input
@@ -2493,9 +2533,9 @@ pub fn App() -> impl IntoView {
                                 </label>
                             </div>
 
-                            <textarea
+                             <textarea
                                 id="prompt-input-box"
-                                placeholder={move || if is_streaming.get() { "AI is generating..." } else { "Type your prompt or drag/drop an image..." }}
+                                placeholder={move || if is_streaming.get() { "AI is generating... Click stop to cancel." } else { "Type your prompt or drag/drop an image..." }}
                                 prop:value=move || input_text.get()
                                 on:input=update_input
                                 disabled=move || is_streaming.get()
@@ -2514,14 +2554,37 @@ pub fn App() -> impl IntoView {
                             ></textarea>
 
                             <button
-                                type="submit"
+                                type=move || if is_streaming.get() { "button" } else { "submit" }
                                 id="send-btn-el"
-                                disabled=move || is_streaming.get() || (input_text.get().trim().is_empty() && attached_image.get().is_none())
+                                on:click=move |ev| {
+                                    if is_streaming.get_untracked() {
+                                        ev.prevent_default();
+                                        let convo_id = current_conversation_id.get_untracked();
+                                        if let Some(cid) = convo_id {
+                                            spawn_local(async move {
+                                                let args = serde_wasm_bindgen::to_value(&CancelStreamArgs {
+                                                    conversation_id: cid,
+                                                }).unwrap();
+                                                invoke("cancel_chat_stream", args).await;
+                                            });
+                                        }
+                                    }
+                                }
+                                disabled=move || !is_streaming.get() && (input_text.get().trim().is_empty() && attached_image.get().is_none())
                                 class="shrink-0 flex items-center justify-center p-2.5 rounded-xl bg-theme-accent text-theme-bg hover:opacity-95 transition-all shadow-md active:scale-[0.96] disabled:opacity-35 disabled:cursor-not-allowed theme-transition"
                             >
-                                <svg class="w-5 h-5 rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/>
-                                </svg>
+                                <Show
+                                    when=move || is_streaming.get()
+                                    fallback=move || view! {
+                                        <svg class="w-5 h-5 rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/>
+                                        </svg>
+                                    }
+                                >
+                                    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                                        <rect x="6" y="6" width="12" height="12" rx="1.5" />
+                                    </svg>
+                                </Show>
                             </button>
                         </div>
                     </form>

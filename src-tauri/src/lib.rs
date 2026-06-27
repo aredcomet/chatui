@@ -4,6 +4,11 @@ mod credentials;
 mod history;
 
 use shared::{ApiConfig, ChatConversation, ChatMessage, Connection, Provider};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use tauri::Manager;
+
+pub struct ActiveStreams(pub Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>>);
 
 #[tauri::command]
 fn get_api_key(provider: Provider) -> Result<Option<String>, String> {
@@ -86,6 +91,19 @@ async fn send_message_stream(
         (key, None, None)
     };
 
+    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+    
+    // Register active stream
+    {
+        if let Some(active_streams) = app.try_state::<ActiveStreams>() {
+            let mut map = active_streams.0.lock().unwrap();
+            map.insert(conversation_id.clone(), cancel_tx);
+        }
+    }
+
+    let app_clone = app.clone();
+    let conversation_id_clone = conversation_id.clone();
+
     // Spawn task to handle stream asynchronously and return immediately
     tokio::spawn(async move {
         let _ = api_client::stream_chat_completion(
@@ -96,10 +114,29 @@ async fn send_message_stream(
             config,
             messages,
             reasoning_config,
+            cancel_rx,
         )
         .await;
+
+        // Cleanup active stream when finished or cancelled
+        if let Some(active_streams) = app_clone.try_state::<ActiveStreams>() {
+            let mut map = active_streams.0.lock().unwrap();
+            map.remove(&conversation_id_clone);
+        }
     });
 
+    Ok(())
+}
+
+#[tauri::command]
+fn cancel_chat_stream(app: tauri::AppHandle, conversation_id: String) -> Result<(), String> {
+    if let Some(active_streams) = app.try_state::<ActiveStreams>() {
+        let mut map = active_streams.0.lock().unwrap();
+        if let Some(cancel_tx) = map.remove(&conversation_id) {
+            let _ = cancel_tx.send(());
+            println!("Backend: stream cancellation triggered for conversation {}", conversation_id);
+        }
+    }
     Ok(())
 }
 
@@ -121,12 +158,14 @@ fn delete_conversation(app: tauri::AppHandle, id: String) -> Result<(), String> 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(ActiveStreams(Arc::new(Mutex::new(HashMap::new()))))
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             get_api_key,
             set_api_key,
             delete_api_key,
             send_message_stream,
+            cancel_chat_stream,
             save_conversation,
             load_conversations,
             delete_conversation,

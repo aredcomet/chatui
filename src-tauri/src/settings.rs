@@ -6,6 +6,10 @@ use tauri::{AppHandle, Manager};
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppSettings {
     pub custom_storage_path: Option<String>,
+    #[serde(default)]
+    pub expanded_folders: Vec<String>,
+    #[serde(default)]
+    pub sort_alphabetical: bool,
 }
 
 fn get_settings_file(app: &AppHandle) -> Result<PathBuf, String> {
@@ -62,6 +66,8 @@ mod tests {
         
         let settings = AppSettings {
             custom_storage_path: Some("/mock/custom/path".to_string()),
+            expanded_folders: vec![],
+            sort_alphabetical: false,
         };
         
         // Write to temp, then rename

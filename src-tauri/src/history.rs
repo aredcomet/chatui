@@ -1,8 +1,18 @@
 use shared::ChatConversation;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 use crate::settings;
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+pub struct ChatTreeNode {
+    pub name: String,
+    pub path: String, // Relative path from chats/ root (e.g. "My Folder" or "My Folder/chat_uuid.json")
+    pub is_dir: bool,
+    pub chat_id: Option<String>,
+    pub updated_at: Option<u64>,
+    pub children: Option<Vec<ChatTreeNode>>,
+}
 
 fn get_history_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let settings = settings::load_settings(app);
@@ -14,10 +24,10 @@ fn get_history_dir(app: &AppHandle) -> Result<PathBuf, String> {
             .map_err(|e| format!("Failed to get app data directory: {}", e))?
     };
     
-    dir.push("history");
+    dir.push("chats");
     if !dir.exists() {
         fs::create_dir_all(&dir)
-            .map_err(|e| format!("Failed to create history directory: {}", e))?;
+            .map_err(|e| format!("Failed to create chats directory: {}", e))?;
     }
     Ok(dir)
 }
@@ -48,7 +58,20 @@ fn get_active_assets(conversation: &ChatConversation) -> std::collections::HashS
 
 pub fn save_conversation(app: &AppHandle, conversation: ChatConversation) -> Result<(), String> {
     let dir = get_history_dir(app)?;
-    let file_path = dir.join(format!("{}.json", conversation.id));
+    
+    // Determine target directory using folder_id (relative path of folder)
+    let save_dir = if let Some(ref folder_path) = conversation.folder_id {
+        let p = dir.join(folder_path);
+        if !p.exists() {
+            fs::create_dir_all(&p)
+                .map_err(|e| format!("Failed to create target folder path: {}", e))?;
+        }
+        p
+    } else {
+        dir
+    };
+
+    let file_path = save_dir.join(format!("{}.json", conversation.id));
     let temp_path = file_path.with_extension("tmp");
     
     let json = serde_json::to_string_pretty(&conversation)
@@ -82,34 +105,62 @@ pub fn save_conversation(app: &AppHandle, conversation: ChatConversation) -> Res
     Ok(())
 }
 
-pub fn load_conversations(app: &AppHandle) -> Result<Vec<ChatConversation>, String> {
-    let dir = get_history_dir(app)?;
-    let mut conversations = Vec::new();
-
-    let entries = fs::read_dir(dir)
-        .map_err(|e| format!("Failed to read history directory: {}", e))?;
-
-    for entry in entries {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("json") {
-            if let Ok(content) = fs::read_to_string(&path) {
-                if let Ok(convo) = serde_json::from_str::<ChatConversation>(&content) {
-                    conversations.push(convo);
+fn load_conversations_rec(
+    root_dir: &Path,
+    current_dir: &Path,
+    conversations: &mut Vec<ChatConversation>,
+) {
+    if let Ok(entries) = fs::read_dir(current_dir) {
+        for entry in entries {
+            if let Ok(entry) = entry {
+                let path = entry.path();
+                if path.is_dir() {
+                    load_conversations_rec(root_dir, &path, conversations);
+                } else if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("json") {
+                    if let Ok(content) = fs::read_to_string(&path) {
+                        if let Ok(convo) = serde_json::from_str::<ChatConversation>(&content) {
+                            conversations.push(convo);
+                        }
+                    }
                 }
             }
         }
     }
+}
 
+pub fn load_conversations(app: &AppHandle) -> Result<Vec<ChatConversation>, String> {
+    let dir = get_history_dir(app)?;
+    let mut conversations = Vec::new();
+    load_conversations_rec(&dir, &dir, &mut conversations);
+    
     // Sort descending by updated_at
     conversations.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(conversations)
 }
 
+fn find_conversation_file(dir: &Path, id: &str) -> Option<PathBuf> {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries {
+            if let Ok(entry) = entry {
+                let path = entry.path();
+                if path.is_dir() {
+                    if let Some(found) = find_conversation_file(&path, id) {
+                        return Some(found);
+                    }
+                } else if path.is_file() {
+                    if path.file_name().and_then(|s| s.to_str()) == Some(&format!("{}.json", id)) {
+                        return Some(path);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 pub fn delete_conversation(app: &AppHandle, id: &str) -> Result<(), String> {
     let dir = get_history_dir(app)?;
-    let file_path = dir.join(format!("{}.json", id));
-    if file_path.exists() {
+    if let Some(file_path) = find_conversation_file(&dir, id) {
         fs::remove_file(file_path)
             .map_err(|e| format!("Failed to delete conversation file: {}", e))?;
     }
@@ -152,6 +203,183 @@ pub fn save_thread_asset(app: &AppHandle, thread_id: &str, filename: &str, base6
         .map_err(|e| format!("Failed to write asset file: {}", e))?;
         
     Ok(target_path.to_string_lossy().to_string())
+}
+
+// ─── NESTED ORGANIZATION BACKEND OPERATIONS ───
+
+fn scan_dir_rec(root_dir: &Path, current_dir: &Path) -> Result<Vec<ChatTreeNode>, String> {
+    let mut nodes = Vec::new();
+    if !current_dir.exists() || !current_dir.is_dir() {
+        return Ok(nodes);
+    }
+    
+    let entries = fs::read_dir(current_dir)
+        .map_err(|e| format!("Failed to read directory {:?}: {}", current_dir, e))?;
+        
+    for entry in entries {
+        if let Ok(entry) = entry {
+            let path = entry.path();
+            let relative_path = path.strip_prefix(root_dir)
+                .map_err(|e| e.to_string())?
+                .to_string_lossy()
+                .to_string();
+                
+            let name = entry.file_name().to_string_lossy().to_string();
+            
+            if path.is_dir() {
+                let children = scan_dir_rec(root_dir, &path)?;
+                nodes.push(ChatTreeNode {
+                    name,
+                    path: relative_path,
+                    is_dir: true,
+                    chat_id: None,
+                    updated_at: None,
+                    children: Some(children),
+                });
+            } else if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("json") {
+                if let Ok(content) = fs::read_to_string(&path) {
+                    if let Ok(convo) = serde_json::from_str::<ChatConversation>(&content) {
+                        nodes.push(ChatTreeNode {
+                            name: convo.title.clone(),
+                            path: relative_path,
+                            is_dir: false,
+                            chat_id: Some(convo.id.clone()),
+                            updated_at: Some(convo.updated_at),
+                            children: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    Ok(nodes)
+}
+
+pub fn get_chat_tree(app: &AppHandle) -> Result<Vec<ChatTreeNode>, String> {
+    let dir = get_history_dir(app)?;
+    scan_dir_rec(&dir, &dir)
+}
+
+pub fn create_folder(app: &AppHandle, relative_path: &str) -> Result<(), String> {
+    let root_dir = get_history_dir(app)?;
+    let target_dir = root_dir.join(relative_path);
+    if !target_dir.exists() {
+        fs::create_dir_all(&target_dir)
+            .map_err(|e| format!("Failed to create folder: {}", e))?;
+    }
+    Ok(())
+}
+
+fn update_folder_ids_in_dir(root_dir: &Path, current_dir: &Path) {
+    if let Ok(entries) = fs::read_dir(current_dir) {
+        for entry in entries {
+            if let Ok(entry) = entry {
+                let path = entry.path();
+                if path.is_dir() {
+                    update_folder_ids_in_dir(root_dir, &path);
+                } else if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("json") {
+                    if let Ok(content) = fs::read_to_string(&path) {
+                        if let Ok(mut convo) = serde_json::from_str::<ChatConversation>(&content) {
+                            let parent_rel = path.parent()
+                                .unwrap()
+                                .strip_prefix(root_dir)
+                                .ok()
+                                .map(|p| p.to_string_lossy().to_string())
+                                .filter(|s| !s.is_empty());
+                            if convo.folder_id != parent_rel {
+                                convo.folder_id = parent_rel;
+                                if let Ok(json) = serde_json::to_string_pretty(&convo) {
+                                    let _ = fs::write(&path, json);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn move_item(app: &AppHandle, source_rel: &str, dest_rel: &str) -> Result<(), String> {
+    let root_dir = get_history_dir(app)?;
+    let source_path = root_dir.join(source_rel);
+    let dest_path = root_dir.join(dest_rel);
+    
+    if !source_path.exists() {
+        return Err(format!("Source path does not exist: {}", source_rel));
+    }
+    
+    if let Some(parent) = dest_path.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create destination parent folder: {}", e))?;
+        }
+    }
+    
+    fs::rename(&source_path, &dest_path)
+        .map_err(|e| format!("Failed to rename/move item: {}", e))?;
+        
+    if dest_path.is_file() && dest_path.extension().and_then(|s| s.to_str()) == Some("json") {
+        if let Ok(content) = fs::read_to_string(&dest_path) {
+            if let Ok(mut convo) = serde_json::from_str::<ChatConversation>(&content) {
+                let parent_rel = dest_path.parent()
+                    .unwrap()
+                    .strip_prefix(&root_dir)
+                    .ok()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .filter(|s| !s.is_empty());
+                convo.folder_id = parent_rel;
+                if let Ok(json) = serde_json::to_string_pretty(&convo) {
+                    let _ = fs::write(&dest_path, json);
+                }
+            }
+        }
+    } else if dest_path.is_dir() {
+        update_folder_ids_in_dir(&root_dir, &dest_path);
+    }
+    
+    Ok(())
+}
+
+fn find_chat_ids_in_dir(dir: &Path, ids: &mut Vec<String>) {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries {
+            if let Ok(entry) = entry {
+                let path = entry.path();
+                if path.is_dir() {
+                    find_chat_ids_in_dir(&path, ids);
+                } else if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("json") {
+                    if let Some(name_str) = path.file_stem().and_then(|s| s.to_str()) {
+                        ids.push(name_str.to_string());
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn delete_folder_recursive(app: &AppHandle, relative_path: &str) -> Result<(), String> {
+    let root_dir = get_history_dir(app)?;
+    let target_dir = root_dir.join(relative_path);
+    if !target_dir.exists() {
+        return Ok(());
+    }
+    
+    let mut chat_ids = Vec::new();
+    find_chat_ids_in_dir(&target_dir, &mut chat_ids);
+    
+    fs::remove_dir_all(&target_dir)
+        .map_err(|e| format!("Failed to delete folder directory: {}", e))?;
+        
+    for id in chat_ids {
+        if let Ok(assets_dir) = get_assets_dir(app, &id) {
+            if assets_dir.exists() {
+                let _ = fs::remove_dir_all(assets_dir);
+            }
+        }
+    }
+    
+    Ok(())
 }
 
 #[cfg(test)]
@@ -227,7 +455,6 @@ mod tests {
         assert!(active.contains(&file1));
         assert!(!active.contains(&file2));
         
-        // Scan directory and clean up orphaned files (imitating the logic in save_conversation)
         let entries = fs::read_dir(&temp_dir).unwrap();
         for entry in entries {
             let path = entry.unwrap().path();
@@ -243,6 +470,82 @@ mod tests {
         
         fs::remove_dir_all(temp_dir).unwrap();
     }
+
+    #[test]
+    fn test_recursive_tree_ops() {
+        use shared::{ChatConversation, Provider};
+        let temp_root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        fs::create_dir_all(&temp_root).unwrap();
+
+        let folder1 = temp_root.join("Subfolder A");
+        let folder2 = folder1.join("Nested B");
+        fs::create_dir_all(&folder2).unwrap();
+
+        let convo_root = ChatConversation {
+            id: "root-chat".to_string(),
+            title: "Root Chat".to_string(),
+            model: "model".to_string(),
+            provider: Provider::OpenAI,
+            created_at: chrono::Utc::now(),
+            messages: vec![],
+            updated_at: 100,
+            connection_id: None,
+            folder_id: None,
+            system_prompt: None,
+        };
+        fs::write(
+            temp_root.join("root-chat.json"),
+            serde_json::to_string_pretty(&convo_root).unwrap(),
+        )
+        .unwrap();
+
+        let convo_nested = ChatConversation {
+            id: "nested-chat".to_string(),
+            title: "Nested Chat".to_string(),
+            model: "model".to_string(),
+            provider: Provider::OpenAI,
+            created_at: chrono::Utc::now(),
+            messages: vec![],
+            updated_at: 200,
+            connection_id: None,
+            folder_id: Some("Subfolder A/Nested B".to_string()),
+            system_prompt: None,
+        };
+        fs::write(
+            folder2.join("nested-chat.json"),
+            serde_json::to_string_pretty(&convo_nested).unwrap(),
+        )
+        .unwrap();
+
+        let tree = scan_dir_rec(&temp_root, &temp_root).unwrap();
+        assert_eq!(tree.len(), 2);
+
+        let root_chat_node = tree.iter().find(|n| !n.is_dir).unwrap();
+        assert_eq!(root_chat_node.name, "Root Chat");
+        assert_eq!(root_chat_node.path, "root-chat.json");
+
+        let subfolder_a_node = tree.iter().find(|n| n.is_dir).unwrap();
+        assert_eq!(subfolder_a_node.name, "Subfolder A");
+        assert_eq!(subfolder_a_node.path, "Subfolder A");
+
+        let children = subfolder_a_node.children.as_ref().unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].name, "Nested B");
+
+        // Move Nested B to root
+        let source = "Subfolder A/Nested B";
+        let dest = "Nested B";
+        
+        let source_path = temp_root.join(source);
+        let dest_path = temp_root.join(dest);
+        fs::rename(source_path, &dest_path).unwrap();
+        update_folder_ids_in_dir(&temp_root, &dest_path);
+
+        let chat_path = dest_path.join("nested-chat.json");
+        let content = fs::read_to_string(chat_path).unwrap();
+        let convo: ChatConversation = serde_json::from_str(&content).unwrap();
+        assert_eq!(convo.folder_id, Some("Nested B".to_string()));
+
+        fs::remove_dir_all(temp_root).unwrap();
+    }
 }
-
-

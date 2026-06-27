@@ -157,6 +157,26 @@ fn delete_conversation(app: tauri::AppHandle, id: String) -> Result<(), String> 
 }
 
 #[tauri::command]
+fn get_chat_tree(app: tauri::AppHandle) -> Result<Vec<history::ChatTreeNode>, String> {
+    history::get_chat_tree(&app)
+}
+
+#[tauri::command]
+fn create_folder(app: tauri::AppHandle, relative_path: String) -> Result<(), String> {
+    history::create_folder(&app, &relative_path)
+}
+
+#[tauri::command]
+fn move_item(app: tauri::AppHandle, source_rel: String, dest_rel: String) -> Result<(), String> {
+    history::move_item(&app, &source_rel, &dest_rel)
+}
+
+#[tauri::command]
+fn delete_folder_recursive(app: tauri::AppHandle, relative_path: String) -> Result<(), String> {
+    history::delete_folder_recursive(&app, &relative_path)
+}
+
+#[tauri::command]
 fn get_settings(app: tauri::AppHandle) -> settings::AppSettings {
     settings::load_settings(&app)
 }
@@ -196,7 +216,11 @@ pub fn run() {
             delete_connection,
             get_settings,
             save_settings,
-            save_thread_asset
+            save_thread_asset,
+            get_chat_tree,
+            create_folder,
+            move_item,
+            delete_folder_recursive
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

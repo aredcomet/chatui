@@ -6,7 +6,7 @@ use wasm_bindgen::prelude::Closure;
 use wasm_bindgen::JsCast;
 use crate::app::context::AppContext;
 use crate::app::bindings::{
-    invoke, SaveConversationArgs, DeleteConversationArgs,
+    invoke, invoke_result, SaveConversationArgs, DeleteConversationArgs,
     ChatTreeNode, CreateFolderArgs, MoveItemArgs, DeleteFolderRecursiveArgs,
 };
 
@@ -173,7 +173,7 @@ pub fn Sidebar() -> impl IntoView {
                 conversation: new_convo_c,
             })
             .unwrap();
-            if !invoke("save_conversation", args).await.is_null() {
+            if invoke_result("save_conversation", args).await.is_ok() {
                 let res_tree = invoke("get_chat_tree", serde_wasm_bindgen::to_value(&()).unwrap()).await;
                 if let Ok(tree) = serde_wasm_bindgen::from_value::<Vec<ChatTreeNode>>(res_tree) {
                     set_chat_tree_c.set(tree);
@@ -196,7 +196,7 @@ pub fn Sidebar() -> impl IntoView {
                 let args = serde_wasm_bindgen::to_value(&SaveConversationArgs {
                     conversation: dup_c,
                 }).unwrap();
-                if !invoke("save_conversation", args).await.is_null() {
+                if invoke_result("save_conversation", args).await.is_ok() {
                     let res_tree = invoke("get_chat_tree", serde_wasm_bindgen::to_value(&()).unwrap()).await;
                     if let Ok(tree) = serde_wasm_bindgen::from_value::<Vec<ChatTreeNode>>(res_tree) {
                         set_chat_tree_c.set(tree);
@@ -231,7 +231,7 @@ pub fn Sidebar() -> impl IntoView {
                     let args = serde_wasm_bindgen::to_value(&CreateFolderArgs {
                         relative_path,
                     }).unwrap();
-                    if !invoke("create_folder", args).await.is_null() {
+                    if invoke_result("create_folder", args).await.is_ok() {
                         let res_tree = invoke("get_chat_tree", serde_wasm_bindgen::to_value(&()).unwrap()).await;
                         if let Ok(tree) = serde_wasm_bindgen::from_value::<Vec<ChatTreeNode>>(res_tree) {
                             set_chat_tree_c.set(tree);
@@ -254,7 +254,7 @@ pub fn Sidebar() -> impl IntoView {
                         source_rel: source_path,
                         dest_rel: dest_path,
                     }).unwrap();
-                    if !invoke("move_item", args).await.is_null() {
+                    if invoke_result("move_item", args).await.is_ok() {
                         let res_tree = invoke("get_chat_tree", serde_wasm_bindgen::to_value(&()).unwrap()).await;
                         if let Ok(tree) = serde_wasm_bindgen::from_value::<Vec<ChatTreeNode>>(res_tree) {
                             set_chat_tree_c.set(tree);
@@ -280,7 +280,7 @@ pub fn Sidebar() -> impl IntoView {
                             conversation: convo_clone,
                         })
                         .unwrap();
-                        if !invoke("save_conversation", args).await.is_null() {
+                        if invoke_result("save_conversation", args).await.is_ok() {
                             let res_tree = invoke("get_chat_tree", serde_wasm_bindgen::to_value(&()).unwrap()).await;
                             if let Ok(tree) = serde_wasm_bindgen::from_value::<Vec<ChatTreeNode>>(res_tree) {
                                 set_chat_tree_c.set(tree);
@@ -302,7 +302,7 @@ pub fn Sidebar() -> impl IntoView {
 
                 spawn_local(async move {
                     let args = serde_wasm_bindgen::to_value(&DeleteConversationArgs { id }).unwrap();
-                    if !invoke("delete_conversation", args).await.is_null() {
+                    if invoke_result("delete_conversation", args).await.is_ok() {
                         let res_tree = invoke("get_chat_tree", serde_wasm_bindgen::to_value(&()).unwrap()).await;
                         if let Ok(tree) = serde_wasm_bindgen::from_value::<Vec<ChatTreeNode>>(res_tree) {
                             set_chat_tree_c.set(tree);
@@ -316,7 +316,7 @@ pub fn Sidebar() -> impl IntoView {
                     let args = serde_wasm_bindgen::to_value(&DeleteFolderRecursiveArgs {
                         relative_path: path_c,
                     }).unwrap();
-                    if !invoke("delete_folder_recursive", args).await.is_null() {
+                    if invoke_result("delete_folder_recursive", args).await.is_ok() {
                         let res_convs = invoke("load_conversations", serde_wasm_bindgen::to_value(&()).unwrap()).await;
                         if let Ok(convs) = serde_wasm_bindgen::from_value::<Vec<ChatConversation>>(res_convs) {
                             set_conversations_c.set(convs.clone());
@@ -394,7 +394,7 @@ pub fn Sidebar() -> impl IntoView {
                                 source_rel: src_c,
                                 dest_rel: dest_c,
                             }).unwrap();
-                            if !invoke("move_item", args).await.is_null() {
+                            if invoke_result("move_item", args).await.is_ok() {
                                 let res_tree = invoke("get_chat_tree", serde_wasm_bindgen::to_value(&()).unwrap()).await;
                                 if let Ok(tree) = serde_wasm_bindgen::from_value::<Vec<ChatTreeNode>>(res_tree) {
                                     set_chat_tree_c.set(tree);
@@ -921,7 +921,7 @@ fn FolderNode(
                                 source_rel: src_c,
                                 dest_rel: dest_c,
                             }).unwrap();
-                            if !invoke("move_item", args).await.is_null() {
+                            if invoke_result("move_item", args).await.is_ok() {
                                 let res_tree = invoke("get_chat_tree", serde_wasm_bindgen::to_value(&()).unwrap()).await;
                                 if let Ok(tree) = serde_wasm_bindgen::from_value::<Vec<ChatTreeNode>>(res_tree) {
                                     set_chat_tree_c.set(tree);

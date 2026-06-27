@@ -30,6 +30,11 @@ pub async fn invoke(cmd: &str, args: JsValue) -> JsValue {
     }
 }
 
+pub async fn invoke_result(cmd: &str, args: JsValue) -> Result<JsValue, JsValue> {
+    let promise = invoke_raw(cmd, args);
+    wasm_bindgen_futures::JsFuture::from(promise).await
+}
+
 // Arguments for Tauri commands
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

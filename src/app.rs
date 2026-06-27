@@ -885,9 +885,39 @@ pub fn App() -> impl IntoView {
             .find(|c| c.id == id)
         {
             set_messages.set(convo.messages.clone());
-            set_selected_provider.set(convo.provider);
-            set_selected_model.set(convo.model.clone());
-            set_active_connection_id.set(convo.connection_id.clone());
+            
+            // Resolve connection:
+            // 1. Try convo.connection_id
+            // 2. Try matching convo.provider
+            // 3. Fallback to first connection
+            let conns = connections.get_untracked();
+            let resolved_conn = if let Some(ref conn_id) = convo.connection_id {
+                conns.iter().find(|c| &c.id == conn_id).cloned()
+            } else {
+                None
+            };
+            
+            let resolved_conn = resolved_conn
+                .or_else(|| {
+                    conns.iter().find(|c| c.provider == convo.provider).cloned()
+                })
+                .or_else(|| conns.first().cloned());
+                
+            if let Some(conn) = resolved_conn {
+                set_active_connection_id.set(Some(conn.id.clone()));
+                set_selected_provider.set(conn.provider);
+                
+                if !convo.model.is_empty() && conn.enabled_models.contains(&convo.model) {
+                    set_selected_model.set(convo.model.clone());
+                } else {
+                    set_selected_model.set(conn.default_model.clone());
+                }
+            } else {
+                set_active_connection_id.set(None);
+                set_selected_provider.set(convo.provider);
+                set_selected_model.set(convo.model.clone());
+            }
+
             spawn_local(async move {
                 scroll_chat_to_bottom();
             });
@@ -899,8 +929,30 @@ pub fn App() -> impl IntoView {
             return;
         }
         let uuid = uuid::Uuid::new_v4().to_string();
-        let provider = selected_provider.get_untracked();
-        let model = selected_model.get_untracked();
+        
+        let conns = connections.get_untracked();
+        let conn_id = active_connection_id.get_untracked();
+        let resolved_conn = if let Some(ref cid) = conn_id {
+            conns.iter().find(|c| &c.id == cid).cloned()
+        } else {
+            None
+        };
+        let resolved_conn = resolved_conn.or_else(|| conns.first().cloned());
+        
+        let (resolved_conn_id, provider, model) = if let Some(conn) = resolved_conn {
+            let cid = conn.id.clone();
+            let prov = conn.provider;
+            let m = conn.default_model.clone();
+            
+            set_active_connection_id.set(Some(cid.clone()));
+            set_selected_provider.set(prov);
+            set_selected_model.set(m.clone());
+            
+            (Some(cid), prov, m)
+        } else {
+            (None, selected_provider.get_untracked(), selected_model.get_untracked())
+        };
+
         let new_convo = ChatConversation {
             id: uuid.clone(),
             title: format!("New Chat ({})", provider.to_string()),
@@ -908,7 +960,7 @@ pub fn App() -> impl IntoView {
             provider,
             messages: Vec::new(),
             updated_at: js_sys::Date::now() as u64,
-            connection_id: active_connection_id.get_untracked(),
+            connection_id: resolved_conn_id,
         };
 
         let mut current_convs = conversations.get_untracked();

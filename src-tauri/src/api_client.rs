@@ -532,6 +532,7 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
 
                 let start_time = std::time::Instant::now();
                 let mut first_token_time = None;
+                let mut first_content_token_time = None;
                 let mut token_count = 0;
                 let mut stop_reason = None;
                 let mut in_thinking = false;
@@ -600,6 +601,7 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
                                                                 tokens_per_sec: None,
                                                                 total_tokens: None,
                                                                 stop_reason: None,
+                                                                reasoning_duration_ms: None,
                                                             },
                                                         )
                                                         .map_err(|e| e.to_string())?;
@@ -614,6 +616,24 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
 
                                         // 2. Process normal content
                                         if let Some(content) = &choice.delta.content {
+                                            let mut is_content_transition = false;
+                                            if thinking_enabled {
+                                                is_content_transition = true;
+                                            } else {
+                                                let mut end_tag = "</think>".to_string();
+                                                if let Some(rc) = &reasoning_config {
+                                                    if rc.enabled && rc.is_raw_stream {
+                                                        end_tag = rc.end_tag.clone();
+                                                    }
+                                                }
+                                                if content.contains(&end_tag) {
+                                                    is_content_transition = true;
+                                                }
+                                            }
+                                            if is_content_transition && first_content_token_time.is_none() {
+                                                first_content_token_time = Some(start_time.elapsed());
+                                            }
+
                                             let mut emit_text = String::new();
                                             if in_thinking {
                                                 in_thinking = false;
@@ -638,6 +658,7 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
                                                         tokens_per_sec: None,
                                                         total_tokens: None,
                                                         stop_reason: None,
+                                                        reasoning_duration_ms: None,
                                                     },
                                                 )
                                                 .map_err(|e| e.to_string())?;
@@ -671,6 +692,7 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
                                 tokens_per_sec: None,
                                 total_tokens: None,
                                 stop_reason: None,
+                                reasoning_duration_ms: None,
                             },
                         )
                         .map_err(|e| e.to_string())?;
@@ -689,6 +711,14 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
                     0.0
                 };
 
+                let reasoning_duration_ms = if reasoning_config.as_ref().map(|rc| rc.enabled).unwrap_or(false) {
+                    Some(first_content_token_time
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or_else(|| start_time.elapsed().as_millis() as u64))
+                } else {
+                    None
+                };
+
                 Ok(StreamPayload {
                     conversation_id: conversation_id.clone(),
                     text: "".to_string(),
@@ -698,6 +728,7 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
                     tokens_per_sec: Some(tokens_per_sec),
                     total_tokens: Some(token_count),
                     stop_reason: Some(stop_reason.unwrap_or_else(|| "stop".to_string())),
+                    reasoning_duration_ms,
                 })
             }
             Provider::Claude => {
@@ -783,6 +814,7 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
                                                         tokens_per_sec: None,
                                                         total_tokens: None,
                                                         stop_reason: None,
+                                                        reasoning_duration_ms: None,
                                                     },
                                                 )
                                                 .map_err(|e| e.to_string())?;
@@ -822,6 +854,7 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
                     tokens_per_sec: Some(tokens_per_sec),
                     total_tokens: Some(token_count),
                     stop_reason: Some(stop_reason.unwrap_or_else(|| "end_turn".to_string())),
+                    reasoning_duration_ms: None,
                 })
             }
             Provider::Gemini => {
@@ -910,6 +943,7 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
                                                                 tokens_per_sec: None,
                                                                 total_tokens: None,
                                                                 stop_reason: None,
+                                                                reasoning_duration_ms: None,
                                                             },
                                                         )
                                                         .map_err(|e| e.to_string())?;
@@ -945,6 +979,7 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
                     tokens_per_sec: Some(tokens_per_sec),
                     total_tokens: Some(token_count),
                     stop_reason: Some(stop_reason.unwrap_or_else(|| "stop".to_string())),
+                    reasoning_duration_ms: None,
                 })
             }
         }
@@ -969,6 +1004,7 @@ pub async fn stream_chat_completion<R: tauri::Runtime>(
                     tokens_per_sec: None,
                     total_tokens: None,
                     stop_reason: None,
+                    reasoning_duration_ms: None,
                 },
             );
             Err(e)
@@ -1003,6 +1039,7 @@ mod tests {
                 tokens_per_sec: None,
                 total_tokens: None,
                 stop_reason: None,
+                reasoning_duration_ms: None,
             }],
             active_version: 0,
         };

@@ -313,7 +313,7 @@ fn ThinkingBlock(thinking: String, is_thinking: bool, duration_ms: Option<u64>) 
         <div class="mb-3 rounded-xl border border-theme-border/40 bg-theme-panel/20 overflow-hidden theme-transition w-full">
             <div 
                 on:click=move |_| set_collapsed.update(|c| *c = !*c)
-                class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-theme-border/10 select-none text-xs font-semibold text-theme-muted/80 theme-transition"
+                class="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-theme-border/10 select-none text-xs font-semibold text-theme-muted/80 theme-transition"
             >
                 <div class="flex items-center gap-1.5">
                     <svg class="w-3.5 h-3.5 text-theme-accent animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -335,7 +335,7 @@ fn ThinkingBlock(thinking: String, is_thinking: bool, duration_ms: Option<u64>) 
                 </svg>
             </div>
             <div 
-                class=move || format!("px-3.5 pb-3 pt-1 text-[13px] text-theme-muted/90 font-sans border-l-2 border-theme-accent/30 ml-3.5 mb-2 leading-relaxed overflow-x-auto select-text {}", if collapsed.get() { "hidden" } else { "block" })
+                class=move || format!("px-4 pb-4 pt-1 text-[13px] text-theme-muted/90 font-sans leading-relaxed overflow-x-auto select-text {}", if collapsed.get() { "hidden" } else { "block" })
             >
                 {render_message_content(thinking.clone())}
             </div>
@@ -684,6 +684,7 @@ pub fn App() -> impl IntoView {
                                 version.tokens_per_sec = payload.tokens_per_sec;
                                 version.total_tokens = payload.total_tokens;
                                 version.stop_reason = payload.stop_reason.clone();
+                                version.reasoning_duration_ms = payload.reasoning_duration_ms;
                             }
                         }
                     }
@@ -1142,6 +1143,7 @@ pub fn App() -> impl IntoView {
             tokens_per_sec: None,
             total_tokens: None,
             stop_reason: None,
+            reasoning_duration_ms: None,
         };
         current_msgs[last_idx].versions.push(new_version);
         let new_active = current_msgs[last_idx].versions.len() - 1;
@@ -1297,6 +1299,7 @@ pub fn App() -> impl IntoView {
                 tokens_per_sec: None,
                 total_tokens: None,
                 stop_reason: None,
+                reasoning_duration_ms: None,
             }],
             active_version: 0,
         };
@@ -1910,7 +1913,7 @@ pub fn App() -> impl IntoView {
 
                             let active_ver = msg.versions.get(msg.active_version);
                             let content_parts = active_ver.map(|v| v.content.clone()).unwrap_or_default();
-                            let ttft_ms = active_ver.and_then(|v| v.ttft_ms);
+                            let reasoning_duration = active_ver.and_then(|v| v.reasoning_duration_ms);
 
                             if is_user {
                                 view! {
@@ -2062,7 +2065,7 @@ pub fn App() -> impl IntoView {
                                                                                 <ThinkingBlock 
                                                                                     thinking=thinking_opt_for_block.clone().unwrap_or_default() 
                                                                                     is_thinking=is_thinking_active 
-                                                                                    duration_ms=ttft_ms
+                                                                                    duration_ms=reasoning_duration
                                                                                 />
                                                                             </Show>
                                                                             {render_message_content(remaining.clone())}

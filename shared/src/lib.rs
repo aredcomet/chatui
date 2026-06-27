@@ -73,6 +73,8 @@ pub struct MessageVersion {
     pub tokens_per_sec: Option<f32>,
     pub total_tokens: Option<u32>,
     pub stop_reason: Option<String>,
+    #[serde(default)]
+    pub reasoning_duration_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -120,6 +122,7 @@ impl<'de> Deserialize<'de> for ChatMessage {
                     tokens_per_sec: None,
                     total_tokens: None,
                     stop_reason: None,
+                    reasoning_duration_ms: None,
                 }],
                 active_version: 0,
             }),
@@ -137,6 +140,7 @@ impl ChatMessage {
                 tokens_per_sec: None,
                 total_tokens: None,
                 stop_reason: None,
+                reasoning_duration_ms: None,
             }],
             active_version: 0,
         }
@@ -187,4 +191,6 @@ pub struct StreamPayload {
     pub tokens_per_sec: Option<f32>,
     pub total_tokens: Option<u32>,
     pub stop_reason: Option<String>,
+    #[serde(default)]
+    pub reasoning_duration_ms: Option<u64>,
 }

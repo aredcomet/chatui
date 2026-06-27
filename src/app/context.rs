@@ -1,6 +1,8 @@
 use leptos::prelude::*;
 use shared::{ChatConversation, ChatMessage, Connection, Provider};
 use super::theme::AppTheme;
+use super::bindings::ChatTreeNode;
+use std::collections::HashSet;
 
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
@@ -42,4 +44,12 @@ pub struct AppContext {
     pub toast_message: ReadSignal<Option<String>>,
     pub set_toast_message: WriteSignal<Option<String>>,
     pub user_scroll_pinned: StoredValue<bool>,
+
+    // Hierarchical chat organization signals
+    pub chat_tree: ReadSignal<Vec<ChatTreeNode>>,
+    pub set_chat_tree: WriteSignal<Vec<ChatTreeNode>>,
+    pub sort_alphabetical: ReadSignal<bool>,
+    pub set_sort_alphabetical: WriteSignal<bool>,
+    pub expanded_folders: ReadSignal<HashSet<String>>,
+    pub set_expanded_folders: WriteSignal<HashSet<String>>,
 }

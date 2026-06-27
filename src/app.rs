@@ -111,6 +111,11 @@ pub fn App() -> impl IntoView {
     // True when the user has intentionally scrolled away from the bottom during streaming.
     let user_scroll_pinned = StoredValue::new(false);
 
+    // Hierarchical chat tree signals
+    let (chat_tree, set_chat_tree) = signal(Vec::<ChatTreeNode>::new());
+    let (sort_alphabetical, set_sort_alphabetical) = signal(false);
+    let (expanded_folders, set_expanded_folders) = signal(std::collections::HashSet::<String>::new());
+
     // Context sharing
     let ctx = AppContext {
         conversations,
@@ -150,6 +155,12 @@ pub fn App() -> impl IntoView {
         toast_message,
         set_toast_message,
         user_scroll_pinned,
+        chat_tree,
+        set_chat_tree,
+        sort_alphabetical,
+        set_sort_alphabetical,
+        expanded_folders,
+        set_expanded_folders,
     };
     provide_context(ctx);
 
@@ -184,13 +195,6 @@ pub fn App() -> impl IntoView {
     // Load initial configurations from backend
     let load_init_data = move || {
         spawn_local(async move {
-            // Fetch conversations
-            let args = serde_wasm_bindgen::to_value(&()).unwrap();
-            let res_convs = invoke("load_conversations", args).await;
-            if let Ok(convs) = serde_wasm_bindgen::from_value::<Vec<ChatConversation>>(res_convs) {
-                set_conversations.set(convs);
-            }
-
             // Fetch saved connections
             let res_conns = invoke(
                 "load_connections",
@@ -206,8 +210,52 @@ pub fn App() -> impl IntoView {
                     set_selected_model.set(conns[0].default_model.clone());
                 }
             }
+
+            // Fetch settings (expanded folders, sort_alphabetical, etc.)
+            let res_settings = invoke(
+                "get_settings",
+                serde_wasm_bindgen::to_value(&()).unwrap(),
+            )
+            .await;
+            if let Ok(settings) = serde_wasm_bindgen::from_value::<AppSettings>(res_settings) {
+                set_sort_alphabetical.set(settings.sort_alphabetical);
+                let set: std::collections::HashSet<String> = settings.expanded_folders.into_iter().collect();
+                set_expanded_folders.set(set);
+            }
+
+            // Fetch conversations
+            let args = serde_wasm_bindgen::to_value(&()).unwrap();
+            let res_convs = invoke("load_conversations", args).await;
+            if let Ok(convs) = serde_wasm_bindgen::from_value::<Vec<ChatConversation>>(res_convs) {
+                set_conversations.set(convs);
+            }
+
+            // Fetch chat tree
+            let res_tree = invoke("get_chat_tree", serde_wasm_bindgen::to_value(&()).unwrap()).await;
+            if let Ok(tree) = serde_wasm_bindgen::from_value::<Vec<ChatTreeNode>>(res_tree) {
+                set_chat_tree.set(tree);
+            }
         });
     };
+
+    // Save changes to settings dynamically
+    Effect::new(move |_| {
+        let sort = sort_alphabetical.get();
+        let expanded = expanded_folders.get();
+        
+        spawn_local(async move {
+            let res_settings = invoke("get_settings", serde_wasm_bindgen::to_value(&()).unwrap()).await;
+            let mut current = serde_wasm_bindgen::from_value::<AppSettings>(res_settings).unwrap_or_default();
+            
+            let expanded_vec: Vec<String> = expanded.into_iter().collect();
+            if current.sort_alphabetical != sort || current.expanded_folders != expanded_vec {
+                current.sort_alphabetical = sort;
+                current.expanded_folders = expanded_vec;
+                let args = serde_wasm_bindgen::to_value(&current).unwrap();
+                let _ = invoke("save_settings", args).await;
+            }
+        });
+    });
 
     // Periodic synchronization task for buffered streaming chunks to prevent UI jerkiness/lag
     Effect::new(move |_| {

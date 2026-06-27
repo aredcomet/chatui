@@ -99,3 +99,39 @@ pub fn read_file_as_data_url(file: &web_sys::File) -> Result<js_sys::Promise, Js
     reader.read_as_data_url(file)?;
     Ok(promise)
 }
+
+#[derive(serde::Deserialize, serde::Serialize, Debug, Clone, PartialEq)]
+pub struct ChatTreeNode {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub chat_id: Option<String>,
+    pub updated_at: Option<u64>,
+    pub children: Option<Vec<ChatTreeNode>>,
+}
+
+#[derive(Serialize)]
+pub struct CreateFolderArgs {
+    pub relative_path: String,
+}
+
+#[derive(Serialize)]
+pub struct MoveItemArgs {
+    pub source_rel: String,
+    pub dest_rel: String,
+}
+
+#[derive(Serialize)]
+pub struct DeleteFolderRecursiveArgs {
+    pub relative_path: String,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSettings {
+    pub custom_storage_path: Option<String>,
+    pub expanded_folders: Vec<String>,
+    pub sort_alphabetical: bool,
+}
+
+

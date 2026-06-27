@@ -14,6 +14,9 @@ extern "C" {
 
     #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "event"])]
     async fn listen(event: &str, handler: &js_sys::Function) -> JsValue;
+
+    #[wasm_bindgen(js_name = eval)]
+    fn eval_js(s: &str);
 }
 
 // Helper function to call Tauri commands safely and catch exceptions without panicking Wasm
@@ -223,6 +226,32 @@ fn render_inline(text: String) -> Vec<AnyView> {
     views
 }
 
+fn render_latex_and_mermaid() {
+    let script = r#"
+        setTimeout(() => {
+            if (window.renderMathInElement) {
+                window.renderMathInElement(document.body, {
+                    delimiters: [
+                        {left: '$$', right: '$$', display: true},
+                        {left: '$', right: '$', display: false},
+                        {left: '\\(', right: '\\)', display: false},
+                        {left: '\\[', right: '\\]', display: true}
+                    ],
+                    throwOnError: false
+                });
+            }
+            if (window.mermaid) {
+                try {
+                    window.mermaid.run();
+                } catch(e) {
+                    console.error("Mermaid initialization failed", e);
+                }
+            }
+        }, 50);
+    "#;
+    eval_js(script);
+}
+
 fn update_model_reasoning_config<F>(
     configs_signal: WriteSignal<Vec<ModelReasoningConfig>>,
     current_configs: Vec<ModelReasoningConfig>,
@@ -267,20 +296,30 @@ fn parse_thinking_content(text: &str) -> (Option<String>, String) {
 }
 
 #[component]
-fn ThinkingBlock(thinking: String, is_thinking: bool) -> impl IntoView {
+fn ThinkingBlock(thinking: String, is_thinking: bool, duration_ms: Option<u64>) -> impl IntoView {
     let (collapsed, set_collapsed) = signal(false);
+    
+    let label = move || {
+        if is_thinking {
+            "Thinking...".to_string()
+        } else if let Some(ms) = duration_ms {
+            format!("Thought for {:.1}s", ms as f64 / 1000.0)
+        } else {
+            "Thought".to_string()
+        }
+    };
     
     view! {
         <div class="mb-3 rounded-xl border border-theme-border/40 bg-theme-panel/20 overflow-hidden theme-transition w-full">
             <div 
                 on:click=move |_| set_collapsed.update(|c| *c = !*c)
-                class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-theme-border/10 select-none text-[11px] font-semibold text-theme-muted/80 theme-transition"
+                class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-theme-border/10 select-none text-xs font-semibold text-theme-muted/80 theme-transition"
             >
                 <div class="flex items-center gap-1.5">
                     <svg class="w-3.5 h-3.5 text-theme-accent animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                         <path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
                     </svg>
-                    <span>"Thinking Process"</span>
+                    <span>{label}</span>
                     <Show when=move || is_thinking fallback=move || view! {}>
                         <span class="inline-flex h-1.5 w-1.5 rounded-full bg-theme-accent animate-ping"></span>
                     </Show>
@@ -296,9 +335,9 @@ fn ThinkingBlock(thinking: String, is_thinking: bool) -> impl IntoView {
                 </svg>
             </div>
             <div 
-                class=move || format!("px-3.5 pb-3 pt-1 text-[11px] text-theme-muted/90 font-sans whitespace-pre-wrap border-l-2 border-theme-accent/30 ml-3.5 mb-2 leading-relaxed overflow-x-auto select-text {}", if collapsed.get() { "hidden" } else { "block" })
+                class=move || format!("px-3.5 pb-3 pt-1 text-[13px] text-theme-muted/90 font-sans border-l-2 border-theme-accent/30 ml-3.5 mb-2 leading-relaxed overflow-x-auto select-text {}", if collapsed.get() { "hidden" } else { "block" })
             >
-                {thinking.clone()}
+                {render_message_content(thinking.clone())}
             </div>
         </div>
     }
@@ -325,16 +364,24 @@ fn render_message_content(text: String) -> impl IntoView {
                 lines.collect::<Vec<_>>().join("\n")
             };
 
-            views.push(view! {
-                <div class="my-3 rounded-lg overflow-hidden border border-theme-border/60 bg-theme-panel font-mono text-sm max-w-full">
-                    <div class="flex justify-between items-center bg-theme-panel/85 px-4 py-1.5 text-xs text-theme-muted border-b border-theme-border/60 select-none">
-                        <span>{if lang.is_empty() { "code".to_string() } else { lang.clone() }}</span>
+            if lang == "mermaid" {
+                views.push(view! {
+                    <div class="mermaid my-3 p-4 bg-theme-panel/40 border border-theme-border/60 rounded-xl flex justify-center overflow-x-auto">
+                        {code_content}
                     </div>
-                    <pre class="p-4 overflow-x-auto text-theme-text font-mono">
-                        <code>{code_content}</code>
-                    </pre>
-                </div>
-            }.into_any());
+                }.into_any());
+            } else {
+                views.push(view! {
+                    <div class="my-3 rounded-lg overflow-hidden border border-theme-border/60 bg-theme-panel font-mono text-sm max-w-full">
+                        <div class="flex justify-between items-center bg-theme-panel/85 px-4 py-1.5 text-xs text-theme-muted border-b border-theme-border/60 select-none">
+                            <span>{if lang.is_empty() { "code".to_string() } else { lang.clone() }}</span>
+                        </div>
+                        <pre class="p-4 overflow-x-auto text-theme-text font-mono">
+                            <code>{code_content}</code>
+                        </pre>
+                    </div>
+                }.into_any());
+            }
         } else {
             let mut current_paragraph = Vec::new();
             let mut current_list = Vec::new();
@@ -601,6 +648,15 @@ pub fn App() -> impl IntoView {
                     }
                 }
             });
+        }
+    });
+
+    // Auto-render LaTeX equations and Mermaid diagrams when streaming completes or messages list changes
+    Effect::new(move |_| {
+        let streaming = is_streaming.get();
+        let _ = messages.get();
+        if !streaming {
+            render_latex_and_mermaid();
         }
     });
 
@@ -1854,6 +1910,7 @@ pub fn App() -> impl IntoView {
 
                             let active_ver = msg.versions.get(msg.active_version);
                             let content_parts = active_ver.map(|v| v.content.clone()).unwrap_or_default();
+                            let ttft_ms = active_ver.and_then(|v| v.ttft_ms);
 
                             if is_user {
                                 view! {
@@ -2005,6 +2062,7 @@ pub fn App() -> impl IntoView {
                                                                                 <ThinkingBlock 
                                                                                     thinking=thinking_opt_for_block.clone().unwrap_or_default() 
                                                                                     is_thinking=is_thinking_active 
+                                                                                    duration_ms=ttft_ms
                                                                                 />
                                                                             </Show>
                                                                             {render_message_content(remaining.clone())}

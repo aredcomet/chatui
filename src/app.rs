@@ -482,6 +482,7 @@ pub fn App() -> impl IntoView {
 
         let handler = Closure::wrap(Box::new(move |event_obj: JsValue| {
             if let Ok(payload) = js_sys::Reflect::get(&event_obj, &JsValue::from_str("payload")) {
+                web_sys::console::log_2(&JsValue::from_str("Frontend: received chat-stream-chunk payload:"), &payload);
                 if let Ok(payload_struct) =
                     serde_wasm_bindgen::from_value::<StreamPayload>(payload)
                 {

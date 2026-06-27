@@ -464,8 +464,8 @@ pub async fn fetch_provider_models(
     }
 }
 
-pub async fn stream_chat_completion(
-    window: tauri::WebviewWindow,
+pub async fn stream_chat_completion<R: tauri::Runtime>(
+    window: tauri::WebviewWindow<R>,
     conversation_id: String,
     api_key: String,
     base_url: Option<String>,
@@ -538,6 +538,7 @@ pub async fn stream_chat_completion(
 
                 while let Some(chunk_res) = stream.next().await {
                     let chunk = chunk_res.map_err(|e| format!("Stream chunk read failed: {}", e))?;
+                    println!("Backend: received chunk of size {} bytes", chunk.len());
                     buffer.extend_from_slice(&chunk);
 
                     while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
@@ -548,41 +549,51 @@ pub async fn stream_chat_completion(
                             continue;
                         }
 
-                        if line.starts_with("data: ") {
-                            let data = &line[6..];
+                        println!("Backend: processing line -> {:?}", line);
+
+                        if line.starts_with("data:") {
+                            let data = line["data:".len()..].trim();
                             if data == "[DONE]" {
+                                println!("Backend: received [DONE] signal");
                                 break;
                             }
 
-                            if let Ok(chunk) = serde_json::from_str::<OpenAiStreamChunk>(data) {
-                                if let Some(choice) = chunk.choices.first() {
-                                    if let Some(content) = &choice.delta.content {
-                                        if first_token_time.is_none() {
-                                            first_token_time = Some(start_time.elapsed());
+                            match serde_json::from_str::<OpenAiStreamChunk>(data) {
+                                Ok(chunk) => {
+                                    if let Some(choice) = chunk.choices.first() {
+                                        if let Some(content) = &choice.delta.content {
+                                            if first_token_time.is_none() {
+                                                first_token_time = Some(start_time.elapsed());
+                                            }
+                                            token_count += 1;
+                                            println!("Backend: emitting token #{} -> {:?}", token_count, content);
+                                            window
+                                                .emit(
+                                                    "chat-stream-chunk",
+                                                    StreamPayload {
+                                                        conversation_id: conversation_id.clone(),
+                                                        text: content.clone(),
+                                                        done: false,
+                                                        error: None,
+                                                        ttft_ms: None,
+                                                        tokens_per_sec: None,
+                                                        total_tokens: None,
+                                                        stop_reason: None,
+                                                    },
+                                                )
+                                                .map_err(|e| e.to_string())?;
                                         }
-                                        token_count += 1;
-
-                                        window
-                                            .emit(
-                                                "chat-stream-chunk",
-                                                StreamPayload {
-                                                    conversation_id: conversation_id.clone(),
-                                                    text: content.clone(),
-                                                    done: false,
-                                                    error: None,
-                                                    ttft_ms: None,
-                                                    tokens_per_sec: None,
-                                                    total_tokens: None,
-                                                    stop_reason: None,
-                                                },
-                                            )
-                                            .map_err(|e| e.to_string())?;
-                                    }
-                                    if let Some(finish) = &choice.finish_reason {
-                                        stop_reason = Some(finish.clone());
+                                        if let Some(finish) = &choice.finish_reason {
+                                            stop_reason = Some(finish.clone());
+                                        }
                                     }
                                 }
+                                Err(e) => {
+                                    println!("Backend: failed to parse JSON in line {:?}: {}", line, e);
+                                }
                             }
+                        } else {
+                            println!("Backend: line did not start with data:");
                         }
                     }
                 }
@@ -875,7 +886,7 @@ pub async fn stream_chat_completion(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared::{ChatMessage, MessageRole, ContentPart};
+    use shared::{ChatMessage, MessageRole, ContentPart, MessageVersion};
 
     #[test]
     fn test_convert_to_openai_message() {
@@ -1084,6 +1095,42 @@ mod tests {
         let full_text = tokens.join("");
         println!("Full streamed response: {}", full_text);
         assert!(!full_text.is_empty(), "Streamed response was empty");
+    }
+
+    #[tokio::test]
+    async fn test_mock_window_streaming() {
+        // This test verifies we can compile and run stream_chat_completion using a mock Tauri window.
+        // It uses mock_builder to construct a mock tauri::App and window.
+        let app = tauri::test::mock_builder().build(tauri::test::mock_context(tauri::test::noop_assets())).unwrap();
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+
+        // We can test the local mock streaming flow if LM Studio is running,
+        // or just verify that the test compile and run.
+        if std::net::TcpStream::connect("127.0.0.1:1234").is_err() {
+            return;
+        }
+
+        let config = ApiConfig {
+            provider: Provider::CustomOpenAICompliant,
+            model: "gemma-3-270m-it".to_string(),
+            temperature: 0.7,
+            max_tokens: Some(50),
+            connection_id: None,
+        };
+        let messages = vec![ChatMessage::new_text(MessageRole::User, "Hello".to_string())];
+
+        let res = stream_chat_completion(
+            window,
+            "test-conv-id".to_string(),
+            "dummy-key".to_string(),
+            Some("http://127.0.0.1:1234/v1".to_string()),
+            config,
+            messages,
+        ).await;
+
+        assert!(res.is_ok(), "Mock stream_chat_completion failed: {:?}", res);
     }
 }
 

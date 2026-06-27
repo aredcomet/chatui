@@ -385,6 +385,8 @@ pub fn App() -> impl IntoView {
     // Modal settings control
     let (show_settings, set_show_settings) = signal(false);
     let (show_add_connection, set_show_add_connection) = signal(false);
+    // Tracks which connection is being edited (None = adding new)
+    let (editing_connection_id, set_editing_connection_id) = signal(None::<String>);
 
     // Add Connection Form state
     let (new_conn_provider, set_new_conn_provider) = signal(Provider::OpenAI);
@@ -1290,6 +1292,22 @@ pub fn App() -> impl IntoView {
         set_new_conn_default_model.set(String::new());
     };
 
+    // Open the connection form pre-filled with an existing connection's data
+    let open_connection_for_edit = move |conn: Connection| {
+        set_editing_connection_id.set(Some(conn.id.clone()));
+        set_new_conn_name.set(conn.name.clone());
+        set_new_conn_api_key.set(conn.api_key.clone());
+        set_new_conn_base_url.set(conn.base_url.clone().unwrap_or_default());
+        set_new_conn_provider.set(conn.provider);
+        set_new_conn_enabled_models.set(conn.enabled_models.clone());
+        set_new_conn_default_model.set(conn.default_model.clone());
+        // Pre-populate fetched models with the current enabled list so user can see/modify them
+        set_new_conn_fetched_models.set(conn.enabled_models.clone());
+        set_new_conn_search_query.set(String::new());
+        set_fetching_models_error.set(None);
+        set_show_add_connection.set(true);
+    };
+
     let save_new_connection = move |_| {
         let name = new_conn_name.get_untracked().trim().to_string();
         let provider = new_conn_provider.get_untracked();
@@ -1297,57 +1315,71 @@ pub fn App() -> impl IntoView {
         let base_url_str = new_conn_base_url.get_untracked().trim().to_string();
         let enabled_models = new_conn_enabled_models.get_untracked();
         let default_model = new_conn_default_model.get_untracked();
+        let editing_id = editing_connection_id.get_untracked();
 
-        if name.is_empty() {
+        if name.trim().is_empty() {
             set_fetching_models_error.set(Some("Connection name is required".to_string()));
             return;
         }
-        if api_key.is_empty() {
-            set_fetching_models_error.set(Some("API Key is required".to_string()));
+        if api_key.trim().is_empty() {
+            set_fetching_models_error.set(Some("API key is required".to_string()));
             return;
         }
         if enabled_models.is_empty() {
-            set_fetching_models_error.set(Some("Please enable at least one model".to_string()));
+            set_fetching_models_error.set(Some("Select at least one model".to_string()));
             return;
         }
         if default_model.is_empty() {
-            set_fetching_models_error.set(Some("Please set a default model".to_string()));
+            set_fetching_models_error.set(Some("Choose a default model".to_string()));
             return;
         }
 
-        let base_url = if provider == Provider::CustomOpenAICompliant
-            || provider == Provider::OpenRouter
-        {
-            if base_url_str.is_empty() {
-                None
-            } else {
-                Some(base_url_str)
-            }
+        let base_url = if provider == Provider::CustomOpenAICompliant || provider == Provider::OpenRouter {
+            if base_url_str.is_empty() { None } else { Some(base_url_str) }
         } else {
             None
         };
 
-        let conn = Connection {
-            id: uuid::Uuid::new_v4().to_string(),
-            name,
-            provider,
-            api_key,
-            base_url,
-            enabled_models,
-            default_model,
-        };
-
         let mut current_conns = connections.get_untracked();
-        current_conns.push(conn.clone());
-        set_connections.set(current_conns.clone());
 
-        // Select the newly added connection as active
-        set_active_connection_id.set(Some(conn.id.clone()));
-        set_selected_provider.set(conn.provider);
-        set_selected_model.set(conn.default_model.clone());
+        if let Some(edit_id) = editing_id {
+            // ── Edit mode: update the existing connection in-place ──
+            if let Some(conn) = current_conns.iter_mut().find(|c| c.id == edit_id) {
+                conn.name = name;
+                conn.api_key = api_key;
+                conn.provider = provider;
+                conn.base_url = base_url;
+                conn.enabled_models = enabled_models;
+                conn.default_model = default_model.clone();
+            }
+            set_connections.set(current_conns.clone());
 
-        // Reset Add connection state
+            // Refresh the active connection selectors if it was the active one
+            if active_connection_id.get_untracked() == Some(edit_id) {
+                set_selected_provider.set(provider);
+                set_selected_model.set(default_model);
+            }
+        } else {
+            // ── Add mode: create a new connection ──
+            let conn = Connection {
+                id: uuid::Uuid::new_v4().to_string(),
+                name,
+                provider,
+                api_key,
+                base_url,
+                enabled_models,
+                default_model: default_model.clone(),
+            };
+            current_conns.push(conn.clone());
+            set_connections.set(current_conns.clone());
+            set_active_connection_id.set(Some(conn.id.clone()));
+            set_selected_provider.set(conn.provider);
+            set_selected_model.set(default_model);
+        }
+
+        // Reset form state
         set_show_add_connection.set(false);
+        set_editing_connection_id.set(None);
         set_new_conn_name.set(String::new());
         set_new_conn_api_key.set(String::new());
         set_new_conn_base_url.set(String::new());
@@ -1355,12 +1387,10 @@ pub fn App() -> impl IntoView {
         set_new_conn_search_query.set(String::new());
         set_new_conn_enabled_models.set(Vec::new());
         set_new_conn_default_model.set(String::new());
+        set_fetching_models_error.set(None);
 
         spawn_local(async move {
-            let args = serde_wasm_bindgen::to_value(&SaveConnectionsArgs {
-                connections: current_conns,
-            })
-            .unwrap();
+            let args = serde_wasm_bindgen::to_value(&SaveConnectionsArgs { connections: current_conns }).unwrap();
             invoke("save_connections", args).await;
         });
     };
@@ -2187,6 +2217,11 @@ pub fn App() -> impl IntoView {
                                 on:click=move |_| {
                                     set_show_settings.set(false);
                                     set_show_add_connection.set(false);
+                                    set_editing_connection_id.set(None);
+                                    set_new_conn_fetched_models.set(Vec::new());
+                                    set_new_conn_enabled_models.set(Vec::new());
+                                    set_new_conn_default_model.set(String::new());
+                                    set_fetching_models_error.set(None);
                                 }
                                 class="text-theme-muted hover:text-theme-text p-1.5 rounded-lg hover:bg-theme-bg transition-all"
                             >
@@ -2238,7 +2273,7 @@ pub fn App() -> impl IntoView {
 
                                                             view! {
                                                                 <div class="p-4 bg-theme-bg/40 border border-theme-border/60 rounded-2xl flex items-center justify-between group hover:border-theme-accent/40 transition-all">
-                                                                    <div class="min-w-0 pr-2">
+                                                                    <div class="min-w-0 pr-2 flex-1">
                                                                         <div class="flex items-center gap-2">
                                                                             <span class="text-sm font-bold text-theme-text truncate">{name}</span>
                                                                             <span class="text-[9px] font-semibold bg-theme-border/80 text-theme-accent py-0.5 px-1.5 rounded-full">{provider_name}</span>
@@ -2246,14 +2281,30 @@ pub fn App() -> impl IntoView {
                                                                         <p class="text-xs text-theme-muted mt-1 truncate">"Default: " <span class="font-mono text-theme-text/80">{default_model}</span></p>
                                                                         <p class="text-[10px] text-theme-muted/60 mt-0.5">{enabled_count} " models configured"</p>
                                                                     </div>
-                                                                    <button
-                                                                        on:click=move |_| delete_connection_click(id.clone())
-                                                                        class="p-2 rounded-xl text-theme-muted hover:text-red-400 hover:bg-theme-bg transition-all shrink-0"
-                                                                    >
-                                                                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                                                                        </svg>
-                                                                    </button>
+                                                                    // Edit + Delete buttons
+                                                                    <div class="flex items-center gap-1 shrink-0">
+                                                                        <button
+                                                                            on:click={
+                                                                                let conn_clone = conn.clone();
+                                                                                move |_| open_connection_for_edit(conn_clone.clone())
+                                                                            }
+                                                                            title="Edit connection"
+                                                                            class="p-2 rounded-xl text-theme-muted hover:text-theme-text hover:bg-theme-bg transition-all"
+                                                                        >
+                                                                            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                                                                <path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                                                            </svg>
+                                                                        </button>
+                                                                        <button
+                                                                            on:click=move |_| delete_connection_click(id.clone())
+                                                                            title="Delete connection"
+                                                                            class="p-2 rounded-xl text-theme-muted hover:text-red-400 hover:bg-theme-bg transition-all"
+                                                                        >
+                                                                            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                                                            </svg>
+                                                                        </button>
+                                                                    </div>
                                                                 </div>
                                                             }
                                                         }).collect::<Vec<_>>()}
@@ -2265,7 +2316,9 @@ pub fn App() -> impl IntoView {
                                 }.into_any()
                             >
                                 <div class="p-5 bg-theme-bg/40 border border-theme-border/60 rounded-2xl space-y-4">
-                                    <h4 class="text-sm font-bold text-theme-text">"Configure Connection"</h4>
+                                    <h4 class="text-sm font-bold text-theme-text">
+                                        {move || if editing_connection_id.get().is_some() { "Edit Connection" } else { "Configure Connection" }}
+                                    </h4>
 
                                     // Fields Grid
                                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -2457,7 +2510,18 @@ pub fn App() -> impl IntoView {
                                     <div class="flex justify-end gap-3 pt-4 border-t border-theme-border/60">
                                         <button
                                             type="button"
-                                            on:click=move |_| set_show_add_connection.set(false)
+                                            on:click=move |_| {
+                                                set_show_add_connection.set(false);
+                                                set_editing_connection_id.set(None);
+                                                set_new_conn_name.set(String::new());
+                                                set_new_conn_api_key.set(String::new());
+                                                set_new_conn_base_url.set(String::new());
+                                                set_new_conn_fetched_models.set(Vec::new());
+                                                set_new_conn_search_query.set(String::new());
+                                                set_new_conn_enabled_models.set(Vec::new());
+                                                set_new_conn_default_model.set(String::new());
+                                                set_fetching_models_error.set(None);
+                                            }
                                             class="py-2 px-4 rounded-xl border border-theme-border text-theme-muted hover:bg-theme-bg hover:text-theme-text transition-all text-xs font-semibold active:scale-[0.97]"
                                         >
                                             "Back to List"
@@ -2467,7 +2531,7 @@ pub fn App() -> impl IntoView {
                                             on:click=save_new_connection
                                             class="py-2 px-4.5 rounded-xl bg-theme-text text-theme-bg hover:opacity-90 transition-all text-xs font-semibold active:scale-[0.97]"
                                         >
-                                            "Save Connection"
+                                            {move || if editing_connection_id.get().is_some() { "Save Changes" } else { "Save Connection" }}
                                         </button>
                                     </div>
                                 </div>
@@ -2480,6 +2544,14 @@ pub fn App() -> impl IntoView {
                                 on:click=move |_| {
                                     set_show_settings.set(false);
                                     set_show_add_connection.set(false);
+                                    set_editing_connection_id.set(None);
+                                    set_new_conn_name.set(String::new());
+                                    set_new_conn_api_key.set(String::new());
+                                    set_new_conn_base_url.set(String::new());
+                                    set_new_conn_fetched_models.set(Vec::new());
+                                    set_new_conn_enabled_models.set(Vec::new());
+                                    set_new_conn_default_model.set(String::new());
+                                    set_fetching_models_error.set(None);
                                 }
                                 class="py-2 px-5 rounded-xl bg-theme-bg border border-theme-border text-theme-muted hover:text-theme-text hover:border-theme-accent/50 transition-all text-xs font-semibold active:scale-[0.97]"
                             >

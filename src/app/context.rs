@@ -1,0 +1,45 @@
+use leptos::prelude::*;
+use shared::{ChatConversation, ChatMessage, Connection, Provider};
+use super::theme::AppTheme;
+
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+pub struct AppContext {
+    pub conversations: ReadSignal<Vec<ChatConversation>>,
+    pub set_conversations: WriteSignal<Vec<ChatConversation>>,
+    pub current_conversation_id: ReadSignal<Option<String>>,
+    pub set_current_conversation_id: WriteSignal<Option<String>>,
+    pub messages: ReadSignal<Vec<ChatMessage>>,
+    pub set_messages: WriteSignal<Vec<ChatMessage>>,
+    pub input_text: ReadSignal<String>,
+    pub set_input_text: WriteSignal<String>,
+    pub attached_image: ReadSignal<Option<(String, String)>>,
+    pub set_attached_image: WriteSignal<Option<(String, String)>>,
+    pub editing_convo_id: ReadSignal<Option<String>>,
+    pub set_editing_convo_id: WriteSignal<Option<String>>,
+    pub editing_convo_title: ReadSignal<String>,
+    pub set_editing_convo_title: WriteSignal<String>,
+    pub app_theme: ReadSignal<AppTheme>,
+    pub set_app_theme: WriteSignal<AppTheme>,
+    pub connections: ReadSignal<Vec<Connection>>,
+    pub set_connections: WriteSignal<Vec<Connection>>,
+    pub active_connection_id: ReadSignal<Option<String>>,
+    pub set_active_connection_id: WriteSignal<Option<String>>,
+    pub selected_provider: ReadSignal<Provider>,
+    pub set_selected_provider: WriteSignal<Provider>,
+    pub selected_model: ReadSignal<String>,
+    pub set_selected_model: WriteSignal<String>,
+    pub temperature: ReadSignal<f32>,
+    pub set_temperature: WriteSignal<f32>,
+    pub show_settings: ReadSignal<bool>,
+    pub set_show_settings: WriteSignal<bool>,
+    pub is_streaming: ReadSignal<bool>,
+    pub set_is_streaming: WriteSignal<bool>,
+    pub editing_message_idx: ReadSignal<Option<usize>>,
+    pub set_editing_message_idx: WriteSignal<Option<usize>>,
+    pub editing_message_text: ReadSignal<String>,
+    pub set_editing_message_text: WriteSignal<String>,
+    pub toast_message: ReadSignal<Option<String>>,
+    pub set_toast_message: WriteSignal<Option<String>>,
+    pub user_scroll_pinned: StoredValue<bool>,
+}

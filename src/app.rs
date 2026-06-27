@@ -2,21 +2,27 @@ use leptos::task::spawn_local;
 use leptos::{ev::SubmitEvent, prelude::*};
 use serde::Serialize;
 use shared::{
-    ApiConfig, ChatConversation, ChatMessage, Connection, ContentBlock, MessageRole, Provider,
-    StreamPayload, MessageVersion, MessageMetadata, ModelReasoningConfig,
+    ApiConfig, ChatConversation, ChatMessage, Connection, ContentBlock, MessageMetadata,
+    MessageRole, MessageVersion, ModelReasoningConfig, Provider, StreamPayload,
 };
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
 fn append_assistant_token(version: &mut MessageVersion, token: &str) {
     if version.content.is_empty() {
-        version.content.push(ContentBlock::Text { text: String::new() });
+        version.content.push(ContentBlock::Text {
+            text: String::new(),
+        });
     }
 
     let last_block = match version.content.last_mut() {
-        Some(ContentBlock::Text { .. }) | Some(ContentBlock::Reasoning { .. }) => version.content.last_mut().unwrap(),
+        Some(ContentBlock::Text { .. }) | Some(ContentBlock::Reasoning { .. }) => {
+            version.content.last_mut().unwrap()
+        }
         _ => {
-            version.content.push(ContentBlock::Text { text: String::new() });
+            version.content.push(ContentBlock::Text {
+                text: String::new(),
+            });
             version.content.last_mut().unwrap()
         }
     };
@@ -28,7 +34,9 @@ fn append_assistant_token(version: &mut MessageVersion, token: &str) {
                 let pre_think = text[..pos].to_string();
                 let post_think = text[pos + 7..].to_string();
                 *text = pre_think;
-                version.content.push(ContentBlock::Reasoning { text: post_think });
+                version
+                    .content
+                    .push(ContentBlock::Reasoning { text: post_think });
             }
         }
         ContentBlock::Reasoning { text } => {
@@ -125,7 +133,10 @@ fn read_file_as_data_url(file: &web_sys::File) -> Result<js_sys::Promise, JsValu
         }) as Box<dyn FnMut(web_sys::Event)>);
 
         let onerror = Closure::wrap(Box::new(move |_: web_sys::Event| {
-            let _ = reject.call1(&JsValue::UNDEFINED, &JsValue::from_str("Error reading file"));
+            let _ = reject.call1(
+                &JsValue::UNDEFINED,
+                &JsValue::from_str("Error reading file"),
+            );
         }) as Box<dyn FnMut(web_sys::Event)>);
 
         reader_c.set_onload(Some(onload.as_ref().unchecked_ref()));
@@ -186,7 +197,7 @@ fn render_inline(text: String) -> Vec<AnyView> {
     let chars: Vec<char> = text.chars().collect();
     let mut i = 0;
     while i < chars.len() {
-        if i + 1 < chars.len() && chars[i] == '*' && chars[i+1] == '*' {
+        if i + 1 < chars.len() && chars[i] == '*' && chars[i + 1] == '*' {
             if !current.is_empty() {
                 let c = current.clone();
                 views.push(view! { <span>{c}</span> }.into_any());
@@ -195,15 +206,18 @@ fn render_inline(text: String) -> Vec<AnyView> {
             let mut j = i + 2;
             let mut found = false;
             while j + 1 < chars.len() {
-                if chars[j] == '*' && chars[j+1] == '*' {
+                if chars[j] == '*' && chars[j + 1] == '*' {
                     found = true;
                     break;
                 }
                 j += 1;
             }
             if found {
-                let bold_text: String = chars[i+2..j].iter().collect();
-                views.push(view! { <strong class="font-bold text-theme-text">{bold_text}</strong> }.into_any());
+                let bold_text: String = chars[i + 2..j].iter().collect();
+                views.push(
+                    view! { <strong class="font-bold text-theme-text">{bold_text}</strong> }
+                        .into_any(),
+                );
                 i = j + 2;
             } else {
                 current.push('*');
@@ -226,7 +240,7 @@ fn render_inline(text: String) -> Vec<AnyView> {
                 j += 1;
             }
             if found {
-                let code_text: String = chars[i+1..j].iter().collect();
+                let code_text: String = chars[i + 1..j].iter().collect();
                 views.push(view! { <code class="px-1.5 py-0.5 rounded bg-theme-panel font-mono text-[13px] text-theme-accent">{code_text}</code> }.into_any());
                 i = j + 1;
             } else {
@@ -243,7 +257,7 @@ fn render_inline(text: String) -> Vec<AnyView> {
             let mut found = false;
             while j < chars.len() {
                 if chars[j] == '*' {
-                    if j + 1 < chars.len() && chars[j+1] == '*' {
+                    if j + 1 < chars.len() && chars[j + 1] == '*' {
                         j += 2;
                         continue;
                     }
@@ -253,8 +267,10 @@ fn render_inline(text: String) -> Vec<AnyView> {
                 j += 1;
             }
             if found {
-                let italic_text: String = chars[i+1..j].iter().collect();
-                views.push(view! { <em class="italic text-theme-text">{italic_text}</em> }.into_any());
+                let italic_text: String = chars[i + 1..j].iter().collect();
+                views.push(
+                    view! { <em class="italic text-theme-text">{italic_text}</em> }.into_any(),
+                );
                 i = j + 1;
             } else {
                 current.push('*');
@@ -328,7 +344,11 @@ fn parse_thinking_content(text: &str) -> (Option<String>, String) {
         if let Some(end_idx) = text[content_start..].find("</think>") {
             let actual_end = content_start + end_idx;
             let thinking = text[content_start..actual_end].to_string();
-            let remaining = format!("{}{}", &text[..start_idx], &text[actual_end + "</think>".len()..]);
+            let remaining = format!(
+                "{}{}",
+                &text[..start_idx],
+                &text[actual_end + "</think>".len()..]
+            );
             (Some(thinking), remaining)
         } else {
             let thinking = text[content_start..].to_string();
@@ -343,7 +363,7 @@ fn parse_thinking_content(text: &str) -> (Option<String>, String) {
 #[component]
 fn ThinkingBlock(thinking: String, is_thinking: bool, duration_ms: Option<u64>) -> impl IntoView {
     let (collapsed, set_collapsed) = signal(false);
-    
+
     let label = move || {
         if is_thinking {
             "Thinking...".to_string()
@@ -353,12 +373,12 @@ fn ThinkingBlock(thinking: String, is_thinking: bool, duration_ms: Option<u64>) 
             "Thought".to_string()
         }
     };
-    
+
     view! {
-        <div class="mb-3 rounded-xl border border-theme-border/40 bg-theme-panel/20 overflow-hidden theme-transition w-full">
-            <div 
+        <div class="mb-2 rounded-xl border border-theme-border/40 bg-theme-panel/20 overflow-hidden theme-transition w-full">
+            <div
                 on:click=move |_| set_collapsed.update(|c| *c = !*c)
-                class="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-theme-border/10 select-none text-xs font-semibold text-theme-muted/80 theme-transition"
+                class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-theme-border/10 select-none text-xs font-semibold text-theme-muted/80 theme-transition"
             >
                 <div class="flex items-center gap-1.5">
                     <svg class="w-3.5 h-3.5 text-theme-accent animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -369,18 +389,18 @@ fn ThinkingBlock(thinking: String, is_thinking: bool, duration_ms: Option<u64>) 
                         <span class="inline-flex h-1.5 w-1.5 rounded-full bg-theme-accent animate-ping"></span>
                     </Show>
                 </div>
-                <svg 
+                <svg
                     class=move || format!("w-3.5 h-3.5 transform transition-transform duration-200 {}", if collapsed.get() { "-rotate-90" } else { "" })
-                    fill="none" 
-                    viewBox="0 0 24 24" 
-                    stroke="currentColor" 
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
                     stroke-width="2.5"
                 >
                     <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
                 </svg>
             </div>
-            <div 
-                class=move || format!("px-4 pb-4 pt-1 text-[13px] text-theme-muted/90 font-sans leading-relaxed overflow-x-auto select-text {}", if collapsed.get() { "hidden" } else { "block" })
+            <div
+                class=move || format!("px-3 pb-3 pt-1 text-[13px] text-theme-muted/90 font-sans leading-relaxed overflow-x-auto select-text {}", if collapsed.get() { "hidden" } else { "block" })
             >
                 {render_message_content(thinking.clone())}
             </div>
@@ -433,9 +453,9 @@ fn render_message_content(text: String) -> impl IntoView {
 
             let flush_paragraph = |para: &mut Vec<String>, views: &mut Vec<AnyView>| {
                 if !para.is_empty() {
-                    let para_text = para.join(" ");
+                    let para_text = para.join("\n");
                     views.push(view! {
-                        <p class="text-theme-text py-1 leading-relaxed break-words">{render_inline(para_text)}</p>
+                        <p class="whitespace-pre-wrap text-theme-text my-1 py-0.5 leading-relaxed break-words">{render_inline(para_text)}</p>
                     }.into_any());
                     para.clear();
                 }
@@ -448,11 +468,14 @@ fn render_message_content(text: String) -> impl IntoView {
                             <li class="list-disc ml-6 text-theme-text py-0.5">{render_inline(item)}</li>
                         }
                     }).collect();
-                    views.push(view! {
-                        <ul class="space-y-1 my-1">
-                            {list_items}
-                        </ul>
-                    }.into_any());
+                    views.push(
+                        view! {
+                            <ul class="space-y-1 my-1">
+                                {list_items}
+                            </ul>
+                        }
+                        .into_any(),
+                    );
                 }
             };
 
@@ -529,8 +552,6 @@ fn render_message_content(text: String) -> impl IntoView {
     }
 }
 
-
-
 #[component]
 pub fn App() -> impl IntoView {
     // Conversations state
@@ -571,7 +592,8 @@ pub fn App() -> impl IntoView {
     let (new_conn_search_query, set_new_conn_search_query) = signal(String::new());
     let (new_conn_enabled_models, set_new_conn_enabled_models) = signal(Vec::<String>::new());
     let (new_conn_default_model, set_new_conn_default_model) = signal(String::new());
-    let (new_conn_reasoning_configs, set_new_conn_reasoning_configs) = signal(Vec::<ModelReasoningConfig>::new());
+    let (new_conn_reasoning_configs, set_new_conn_reasoning_configs) =
+        signal(Vec::<ModelReasoningConfig>::new());
 
     // Fetch models loading & errors
     let (fetching_models_loading, set_fetching_models_loading) = signal(false);
@@ -636,9 +658,7 @@ pub fn App() -> impl IntoView {
     };
 
     // Kept for compatibility in places that still call is_scroll_at_bottom()
-    let is_scroll_at_bottom = move || -> bool {
-        !user_scroll_pinned.get_value()
-    };
+    let is_scroll_at_bottom = move || -> bool { !user_scroll_pinned.get_value() };
 
     // Scroll helper — programmatic scroll back to bottom also clears the pinned flag
     let scroll_chat_to_bottom = move || {
@@ -658,14 +678,16 @@ pub fn App() -> impl IntoView {
             // Fetch conversations
             let args = serde_wasm_bindgen::to_value(&()).unwrap();
             let res_convs = invoke("load_conversations", args).await;
-            if let Ok(convs) =
-                serde_wasm_bindgen::from_value::<Vec<ChatConversation>>(res_convs)
-            {
+            if let Ok(convs) = serde_wasm_bindgen::from_value::<Vec<ChatConversation>>(res_convs) {
                 set_conversations.set(convs);
             }
 
             // Fetch saved connections
-            let res_conns = invoke("load_connections", serde_wasm_bindgen::to_value(&()).unwrap()).await;
+            let res_conns = invoke(
+                "load_connections",
+                serde_wasm_bindgen::to_value(&()).unwrap(),
+            )
+            .await;
             if let Ok(conns) = serde_wasm_bindgen::from_value::<Vec<Connection>>(res_conns) {
                 set_connections.set(conns.clone());
                 if !conns.is_empty() {
@@ -683,7 +705,7 @@ pub fn App() -> impl IntoView {
         let pending = pending_messages;
         let is_scroll = is_scroll_at_bottom;
         let scroll_bottom = scroll_chat_to_bottom;
-        
+
         let cb = Closure::wrap(Box::new(move || {
             if let Some(msgs) = pending.get_value() {
                 let should_scroll = is_scroll();
@@ -694,7 +716,7 @@ pub fn App() -> impl IntoView {
                 pending.set_value(None);
             }
         }) as Box<dyn FnMut()>);
-        
+
         if let Some(window) = web_sys::window() {
             let _ = window.set_interval_with_callback_and_timeout_and_arguments_0(
                 cb.as_ref().unchecked_ref(),
@@ -710,9 +732,11 @@ pub fn App() -> impl IntoView {
 
         let handler = Closure::wrap(Box::new(move |event_obj: JsValue| {
             if let Ok(payload) = js_sys::Reflect::get(&event_obj, &JsValue::from_str("payload")) {
-                web_sys::console::log_2(&JsValue::from_str("Frontend: received chat-stream-chunk payload:"), &payload);
-                if let Ok(payload_struct) =
-                    serde_wasm_bindgen::from_value::<StreamPayload>(payload)
+                web_sys::console::log_2(
+                    &JsValue::from_str("Frontend: received chat-stream-chunk payload:"),
+                    &payload,
+                );
+                if let Ok(payload_struct) = serde_wasm_bindgen::from_value::<StreamPayload>(payload)
                 {
                     set_stream_chunks.set(Some(payload_struct));
                 }
@@ -758,7 +782,7 @@ pub fn App() -> impl IntoView {
                     }
                 });
                 let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
-                
+
                 if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
                     if let Some(el) = doc.get_element_by_id("inline-edit-textarea") {
                         if let Ok(textarea) = el.dyn_into::<web_sys::HtmlTextAreaElement>() {
@@ -787,7 +811,10 @@ pub fn App() -> impl IntoView {
         let conns = connections.get();
         let conn = conns.iter().find(|c| c.id == conn_id)?;
         let model = selected_model.get();
-        conn.reasoning_configs.iter().find(|rc| rc.model_id == model).cloned()
+        conn.reasoning_configs
+            .iter()
+            .find(|rc| rc.model_id == model)
+            .cloned()
     };
 
     // Streaming chunk listener
@@ -806,7 +833,9 @@ pub fn App() -> impl IntoView {
 
                     if let Some(last_msg) = current_msgs.last_mut() {
                         if last_msg.role == MessageRole::Assistant {
-                            if let Some(version) = last_msg.versions.get_mut(last_msg.active_version) {
+                            if let Some(version) =
+                                last_msg.versions.get_mut(last_msg.active_version)
+                            {
                                 version.metadata.ttft_ms = payload.ttft_ms;
                                 version.metadata.tokens_per_sec = payload.tokens_per_sec;
                                 version.metadata.stop_reason = payload.stop_reason.clone();
@@ -821,11 +850,9 @@ pub fn App() -> impl IntoView {
 
                             let convo_clone = convo.clone();
                             spawn_local(async move {
-                                let args = serde_wasm_bindgen::to_value(
-                                    &SaveConversationArgs {
-                                        conversation: convo_clone,
-                                    },
-                                )
+                                let args = serde_wasm_bindgen::to_value(&SaveConversationArgs {
+                                    conversation: convo_clone,
+                                })
                                 .unwrap();
                                 invoke("save_conversation", args).await;
                             });
@@ -858,14 +885,16 @@ pub fn App() -> impl IntoView {
 
                     if let Some(last_msg) = current_msgs.last_mut() {
                         if last_msg.role == MessageRole::Assistant {
-                            if let Some(version) = last_msg.versions.get_mut(last_msg.active_version) {
+                            if let Some(version) =
+                                last_msg.versions.get_mut(last_msg.active_version)
+                            {
                                 // Update metadata if any is returned in the payload
                                 if payload.done {
                                     version.metadata.ttft_ms = payload.ttft_ms;
                                     version.metadata.tokens_per_sec = payload.tokens_per_sec;
                                     version.metadata.stop_reason = payload.stop_reason.clone();
                                 }
-                                
+
                                 let mut text = payload.text;
                                 if let Some(rc) = get_active_model_reasoning_config() {
                                     if rc.enabled && rc.is_raw_stream {
@@ -891,23 +920,25 @@ pub fn App() -> impl IntoView {
                                     }
                                 }
                             }
-                            
+
                             let metadata = MessageMetadata {
                                 model: selected_model.get_untracked(),
                                 provider: selected_provider.get_untracked(),
-                                connection_id: active_connection_id.get_untracked().unwrap_or_default(),
+                                connection_id: active_connection_id
+                                    .get_untracked()
+                                    .unwrap_or_default(),
                                 created_at: chrono::Utc::now(),
                                 ttft_ms: payload.ttft_ms,
                                 tokens_per_sec: payload.tokens_per_sec,
                                 stop_reason: payload.stop_reason.clone(),
                             };
-                            
+
                             let mut version = MessageVersion {
                                 content: vec![],
                                 metadata,
                             };
                             append_assistant_token(&mut version, &text);
-                            
+
                             current_msgs.push(ChatMessage {
                                 id: uuid::Uuid::new_v4().to_string(),
                                 role: MessageRole::Assistant,
@@ -927,7 +958,7 @@ pub fn App() -> impl IntoView {
                                 }
                             }
                         }
-                        
+
                         let metadata = MessageMetadata {
                             model: selected_model.get_untracked(),
                             provider: selected_provider.get_untracked(),
@@ -937,13 +968,13 @@ pub fn App() -> impl IntoView {
                             tokens_per_sec: payload.tokens_per_sec,
                             stop_reason: payload.stop_reason.clone(),
                         };
-                        
+
                         let mut version = MessageVersion {
                             content: vec![],
                             metadata,
                         };
                         append_assistant_token(&mut version, &text);
-                        
+
                         current_msgs.push(ChatMessage {
                             id: uuid::Uuid::new_v4().to_string(),
                             role: MessageRole::Assistant,
@@ -983,11 +1014,7 @@ pub fn App() -> impl IntoView {
         }
         set_active_connection_id.set(Some(id_str.clone()));
 
-        if let Some(conn) = connections
-            .get_untracked()
-            .iter()
-            .find(|c| c.id == id_str)
-        {
+        if let Some(conn) = connections.get_untracked().iter().find(|c| c.id == id_str) {
             let provider = conn.provider;
             let model = conn.default_model.clone();
             let connection_id = Some(id_str);
@@ -1043,7 +1070,11 @@ pub fn App() -> impl IntoView {
     };
 
     let update_input = move |ev: web_sys::Event| {
-        let target = ev.target().unwrap().dyn_into::<web_sys::HtmlTextAreaElement>().unwrap();
+        let target = ev
+            .target()
+            .unwrap()
+            .dyn_into::<web_sys::HtmlTextAreaElement>()
+            .unwrap();
         set_input_text.set(target.value());
         let style = web_sys::HtmlElement::style(&target);
         let _ = style.set_property("height", "auto");
@@ -1057,13 +1088,9 @@ pub fn App() -> impl IntoView {
             return;
         }
         set_current_conversation_id.set(Some(id.clone()));
-        if let Some(convo) = conversations
-            .get_untracked()
-            .iter()
-            .find(|c| c.id == id)
-        {
+        if let Some(convo) = conversations.get_untracked().iter().find(|c| c.id == id) {
             set_messages.set(convo.messages.clone());
-            
+
             // Resolve connection:
             // 1. Try convo.connection_id
             // 2. Try matching convo.provider
@@ -1074,17 +1101,15 @@ pub fn App() -> impl IntoView {
             } else {
                 None
             };
-            
+
             let resolved_conn = resolved_conn
-                .or_else(|| {
-                    conns.iter().find(|c| c.provider == convo.provider).cloned()
-                })
+                .or_else(|| conns.iter().find(|c| c.provider == convo.provider).cloned())
                 .or_else(|| conns.first().cloned());
-                
+
             if let Some(conn) = resolved_conn {
                 set_active_connection_id.set(Some(conn.id.clone()));
                 set_selected_provider.set(conn.provider);
-                
+
                 if !convo.model.is_empty() && conn.enabled_models.contains(&convo.model) {
                     set_selected_model.set(convo.model.clone());
                 } else {
@@ -1107,7 +1132,7 @@ pub fn App() -> impl IntoView {
             return;
         }
         let uuid = uuid::Uuid::new_v4().to_string();
-        
+
         let conns = connections.get_untracked();
         let conn_id = active_connection_id.get_untracked();
         let resolved_conn = if let Some(ref cid) = conn_id {
@@ -1116,19 +1141,23 @@ pub fn App() -> impl IntoView {
             None
         };
         let resolved_conn = resolved_conn.or_else(|| conns.first().cloned());
-        
+
         let (resolved_conn_id, provider, model) = if let Some(conn) = resolved_conn {
             let cid = conn.id.clone();
             let prov = conn.provider;
             let m = conn.default_model.clone();
-            
+
             set_active_connection_id.set(Some(cid.clone()));
             set_selected_provider.set(prov);
             set_selected_model.set(m.clone());
-            
+
             (Some(cid), prov, m)
         } else {
-            (None, selected_provider.get_untracked(), selected_model.get_untracked())
+            (
+                None,
+                selected_provider.get_untracked(),
+                selected_model.get_untracked(),
+            )
         };
 
         let new_convo = ChatConversation {
@@ -1184,13 +1213,18 @@ pub fn App() -> impl IntoView {
 
     // Rename a conversation and persist
     let rename_chat = move |id: String, new_title: String| {
-        if new_title.trim().is_empty() { return; }
+        if new_title.trim().is_empty() {
+            return;
+        }
         let mut current_convs = conversations.get_untracked();
         if let Some(convo) = current_convs.iter_mut().find(|c| c.id == id) {
             convo.title = new_title.trim().to_string();
             let convo_clone = convo.clone();
             spawn_local(async move {
-                let args = serde_wasm_bindgen::to_value(&SaveConversationArgs { conversation: convo_clone }).unwrap();
+                let args = serde_wasm_bindgen::to_value(&SaveConversationArgs {
+                    conversation: convo_clone,
+                })
+                .unwrap();
                 invoke("save_conversation", args).await;
             });
         }
@@ -1213,8 +1247,7 @@ pub fn App() -> impl IntoView {
                     if file_type.starts_with("image/") {
                         spawn_local(async move {
                             if let Ok(promise) = read_file_as_data_url(&file) {
-                                if let Ok(res) =
-                                    wasm_bindgen_futures::JsFuture::from(promise).await
+                                if let Ok(res) = wasm_bindgen_futures::JsFuture::from(promise).await
                                 {
                                     if let Some(result_str) = res.as_string() {
                                         if let Some(comma_pos) = result_str.find(',') {
@@ -1286,7 +1319,7 @@ pub fn App() -> impl IntoView {
         if idx < current_msgs.len() {
             current_msgs.remove(idx);
             set_messages.set(current_msgs.clone());
-            
+
             // Save conversation
             if let Some(convo_id) = current_conversation_id.get_untracked() {
                 let mut convos = conversations.get_untracked();
@@ -1310,7 +1343,7 @@ pub fn App() -> impl IntoView {
         let mut current_msgs = messages.get_untracked();
         if let Some(msg) = current_msgs.get_mut(idx) {
             let new_text = editing_message_text.get_untracked();
-            
+
             if let Some(version) = msg.versions.get_mut(msg.active_version) {
                 let mut has_text = false;
                 for part in &mut version.content {
@@ -1321,13 +1354,18 @@ pub fn App() -> impl IntoView {
                     }
                 }
                 if !has_text {
-                    version.content.insert(0, ContentBlock::Text { text: new_text.clone() });
+                    version.content.insert(
+                        0,
+                        ContentBlock::Text {
+                            text: new_text.clone(),
+                        },
+                    );
                 }
             }
-            
+
             set_messages.set(current_msgs.clone());
             set_editing_message_idx.set(None);
-            
+
             // Save conversation
             if let Some(convo_id) = current_conversation_id.get_untracked() {
                 let mut convos = conversations.get_untracked();
@@ -1364,7 +1402,7 @@ pub fn App() -> impl IntoView {
                 }
             }
             set_messages.set(current_msgs.clone());
-            
+
             // Save conversation
             if let Some(convo_id) = current_conversation_id.get_untracked() {
                 let mut convos = conversations.get_untracked();
@@ -1394,7 +1432,7 @@ pub fn App() -> impl IntoView {
             if let Some(convo) = convos.iter().find(|c| c.id == convo_id) {
                 let uuid = uuid::Uuid::new_v4().to_string();
                 let branched_messages = convo.messages[..=idx].to_vec();
-                
+
                 let new_convo = ChatConversation {
                     id: uuid.clone(),
                     title: format!("Branch of {}", convo.title),
@@ -1407,11 +1445,11 @@ pub fn App() -> impl IntoView {
                     updated_at: js_sys::Date::now() as u64,
                     connection_id: convo.connection_id.clone(),
                 };
-                
+
                 convos.insert(0, new_convo.clone());
                 set_conversations.set(convos);
                 select_conversation(uuid.clone());
-                
+
                 let new_convo_c = new_convo.clone();
                 spawn_local(async move {
                     let args = serde_wasm_bindgen::to_value(&SaveConversationArgs {
@@ -1432,14 +1470,16 @@ pub fn App() -> impl IntoView {
         if current_msgs.is_empty() {
             return;
         }
-        
+
         let last_idx = current_msgs.len() - 1;
         if current_msgs[last_idx].role != MessageRole::Assistant {
             return;
         }
-        
+
         let new_version = MessageVersion {
-            content: vec![ContentBlock::Text { text: String::new() }],
+            content: vec![ContentBlock::Text {
+                text: String::new(),
+            }],
             metadata: MessageMetadata {
                 model: selected_model.get_untracked(),
                 provider: selected_provider.get_untracked(),
@@ -1453,22 +1493,22 @@ pub fn App() -> impl IntoView {
         current_msgs[last_idx].versions.push(new_version);
         let new_active = current_msgs[last_idx].versions.len() - 1;
         current_msgs[last_idx].active_version = new_active;
-        
+
         set_messages.set(current_msgs.clone());
         set_is_streaming.set(true);
-        
+
         let messages_history = current_msgs[..last_idx].to_vec();
-        
+
         let active_id = match current_conversation_id.get_untracked() {
             Some(id) => id,
             None => return,
         };
-        
+
         let provider = selected_provider.get_untracked();
         let model = selected_model.get_untracked();
         let temp = temperature.get_untracked();
         let conn_id = active_connection_id.get_untracked();
-        
+
         let api_config = ApiConfig {
             provider,
             model,
@@ -1476,7 +1516,7 @@ pub fn App() -> impl IntoView {
             max_tokens: None,
             connection_id: conn_id,
         };
-        
+
         spawn_local(async move {
             let args = serde_wasm_bindgen::to_value(&SendMessageStreamArgs {
                 conversation_id: active_id,
@@ -1484,7 +1524,7 @@ pub fn App() -> impl IntoView {
                 messages: messages_history,
             })
             .unwrap();
-            
+
             let promise = invoke_raw("send_message_stream", args);
             let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
         });
@@ -1498,24 +1538,24 @@ pub fn App() -> impl IntoView {
         if current_msgs.is_empty() {
             return;
         }
-        
+
         let last_idx = current_msgs.len() - 1;
         if current_msgs[last_idx].role != MessageRole::Assistant {
             return;
         }
-        
+
         set_is_streaming.set(true);
-        
+
         let active_id = match current_conversation_id.get_untracked() {
             Some(id) => id,
             None => return,
         };
-        
+
         let provider = selected_provider.get_untracked();
         let model = selected_model.get_untracked();
         let temp = temperature.get_untracked();
         let conn_id = active_connection_id.get_untracked();
-        
+
         let api_config = ApiConfig {
             provider,
             model,
@@ -1523,9 +1563,9 @@ pub fn App() -> impl IntoView {
             max_tokens: None,
             connection_id: conn_id,
         };
-        
+
         let messages_history = current_msgs.clone();
-        
+
         spawn_local(async move {
             let args = serde_wasm_bindgen::to_value(&SendMessageStreamArgs {
                 conversation_id: active_id,
@@ -1533,7 +1573,7 @@ pub fn App() -> impl IntoView {
                 messages: messages_history,
             })
             .unwrap();
-            
+
             let promise = invoke_raw("send_message_stream", args);
             let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
         });
@@ -1627,7 +1667,7 @@ pub fn App() -> impl IntoView {
                     filename: String,
                     base64_data: String,
                 }
-                
+
                 let ext = match mime.as_str() {
                     "image/png" => "png",
                     "image/jpeg" | "image/jpg" => "jpg",
@@ -1640,7 +1680,8 @@ pub fn App() -> impl IntoView {
                     thread_id: active_id_c.clone(),
                     filename,
                     base64_data: b64,
-                }).unwrap();
+                })
+                .unwrap();
 
                 let promise = invoke_raw("save_thread_asset", args);
                 if let Ok(path_val) = wasm_bindgen_futures::JsFuture::from(promise).await {
@@ -1704,7 +1745,6 @@ pub fn App() -> impl IntoView {
                     serde_wasm_bindgen::to_value(&SaveConversationArgs {
                         conversation: convo_clone,
                     })
-
                     .unwrap(),
                 );
                 let _ = wasm_bindgen_futures::JsFuture::from(save_promise).await;
@@ -1712,7 +1752,9 @@ pub fn App() -> impl IntoView {
             set_conversations.set(convos);
 
             if let Err(err) = invoke_res {
-                let err_str = err.as_string().unwrap_or_else(|| "Unknown connection error".to_string());
+                let err_str = err
+                    .as_string()
+                    .unwrap_or_else(|| "Unknown connection error".to_string());
                 set_is_streaming.set(false);
                 let mut current_msgs = messages.get_untracked();
                 current_msgs.push(ChatMessage::new_text(
@@ -1739,17 +1781,16 @@ pub fn App() -> impl IntoView {
             return;
         }
 
-        let base_url = if provider == Provider::CustomOpenAICompliant
-            || provider == Provider::OpenRouter
-        {
-            if base_url_str.is_empty() {
-                None
+        let base_url =
+            if provider == Provider::CustomOpenAICompliant || provider == Provider::OpenRouter {
+                if base_url_str.is_empty() {
+                    None
+                } else {
+                    Some(base_url_str)
+                }
             } else {
-                Some(base_url_str)
-            }
-        } else {
-            None
-        };
+                None
+            };
 
         set_fetching_models_loading.set(true);
         set_fetching_models_error.set(None);
@@ -1767,24 +1808,24 @@ pub fn App() -> impl IntoView {
             set_fetching_models_loading.set(false);
 
             match invoke_res {
-                Ok(val) => {
-                    match serde_wasm_bindgen::from_value::<Vec<String>>(val) {
-                        Ok(models) => {
-                            if models.is_empty() {
-                                set_fetching_models_error
-                                    .set(Some("No models returned by this endpoint".to_string()));
-                            } else {
-                                set_new_conn_fetched_models.set(models);
-                            }
-                        }
-                        Err(e) => {
+                Ok(val) => match serde_wasm_bindgen::from_value::<Vec<String>>(val) {
+                    Ok(models) => {
+                        if models.is_empty() {
                             set_fetching_models_error
-                                .set(Some(format!("Tauri mapping failure: {:?}", e)));
+                                .set(Some("No models returned by this endpoint".to_string()));
+                        } else {
+                            set_new_conn_fetched_models.set(models);
                         }
                     }
-                }
+                    Err(e) => {
+                        set_fetching_models_error
+                            .set(Some(format!("Tauri mapping failure: {:?}", e)));
+                    }
+                },
                 Err(err) => {
-                    let err_str = err.as_string().unwrap_or_else(|| "Unknown error".to_string());
+                    let err_str = err
+                        .as_string()
+                        .unwrap_or_else(|| "Unknown error".to_string());
                     set_fetching_models_error.set(Some(err_str));
                 }
             }
@@ -1861,11 +1902,16 @@ pub fn App() -> impl IntoView {
             return;
         }
 
-        let base_url = if provider == Provider::CustomOpenAICompliant || provider == Provider::OpenRouter {
-            if base_url_str.is_empty() { None } else { Some(base_url_str) }
-        } else {
-            None
-        };
+        let base_url =
+            if provider == Provider::CustomOpenAICompliant || provider == Provider::OpenRouter {
+                if base_url_str.is_empty() {
+                    None
+                } else {
+                    Some(base_url_str)
+                }
+            } else {
+                None
+            };
 
         let mut current_conns = connections.get_untracked();
         let mut reasoning_configs = new_conn_reasoning_configs.get_untracked();
@@ -1922,7 +1968,10 @@ pub fn App() -> impl IntoView {
         set_fetching_models_error.set(None);
 
         spawn_local(async move {
-            let args = serde_wasm_bindgen::to_value(&SaveConnectionsArgs { connections: current_conns }).unwrap();
+            let args = serde_wasm_bindgen::to_value(&SaveConnectionsArgs {
+                connections: current_conns,
+            })
+            .unwrap();
             invoke("save_connections", args).await;
         });
     };
@@ -2230,7 +2279,7 @@ pub fn App() -> impl IntoView {
                 // Message Feed
                 <div
                     id="chat-messages-container"
-                    class="flex-1 overflow-y-auto px-6 py-8 space-y-6 scrollbar-thin scroll-smooth"
+                    class="flex-1 overflow-y-auto px-4 py-4 space-y-4 scrollbar-thin scroll-smooth"
                 >
                     <Show
                         when=move || !messages.get().is_empty()
@@ -2259,11 +2308,8 @@ pub fn App() -> impl IntoView {
 
                             if is_user {
                                 view! {
-                                    <div class="w-full flex justify-end py-2 select-text">
-                                        <div class="w-full max-w-[70ch] bg-theme-panel text-theme-text border border-theme-border/60 rounded-2xl p-4 shadow-sm transition-all theme-transition">
-                                            <div class="flex items-center gap-2 mb-2 text-xs font-semibold text-theme-muted uppercase tracking-wider select-none font-sans justify-end">
-                                                "You"
-                                            </div>
+                                    <div class="w-full flex justify-end py-1 select-text">
+                                        <div class="w-full max-w-[70ch] bg-theme-panel text-theme-text border border-theme-border/60 rounded-2xl p-3 shadow-sm transition-all theme-transition">
 
                                             <div class="space-y-3 max-w-full overflow-hidden">
                                                 <Show
@@ -2278,7 +2324,7 @@ pub fn App() -> impl IntoView {
                                                                     }
                                                                     ContentBlock::Reasoning { text } => {
                                                                         view! {
-                                                                            <div class="border-l-2 border-theme-accent/30 pl-3 py-1 my-1 text-theme-muted/90 italic font-sans text-sm bg-theme-panel/50 rounded-r-md">
+                                                                            <div class="whitespace-pre-wrap border-l-2 border-theme-accent/30 pl-3 py-1 my-1 text-theme-muted/90 italic font-sans text-sm bg-theme-panel/50 rounded-r-md">
                                                                                 "Thinking: " {text.clone()}
                                                                             </div>
                                                                         }.into_any()
@@ -2402,8 +2448,8 @@ pub fn App() -> impl IntoView {
                                 }.into_any()
                             } else {
                                 view! {
-                                    <div class="w-full py-6 transition-all theme-transition select-text">
-                                        <div class="flex items-center gap-2 mb-3 text-xs font-semibold text-theme-muted uppercase tracking-wider select-none font-sans">
+                                    <div class="w-full py-3 transition-all theme-transition select-text">
+                                        <div class="flex items-center gap-2 mb-1.5 text-xs font-semibold text-theme-muted uppercase tracking-wider select-none font-sans">
                                             "AI"
                                         </div>
 
@@ -2413,23 +2459,23 @@ pub fn App() -> impl IntoView {
                                                 fallback=move || {
                                                     let parts = content_parts.clone();
                                                     view! {
-                                                        <div class="space-y-4 max-w-full overflow-hidden">
+                                                        <div class="space-y-3 max-w-full overflow-hidden">
                                                             {parts.iter().map(|part| match part {
                                                                 ContentBlock::Text { text } => {
                                                                     let (thinking_opt, remaining) = parse_thinking_content(text);
                                                                     let is_thinking_active = thinking_opt.is_some() && !text.contains("</think>");
                                                                     let thinking_opt_for_show = thinking_opt.clone();
                                                                     let thinking_opt_for_block = thinking_opt.clone();
-                                                                    
+
                                                                     view! {
                                                                         <div class="flex flex-col w-full">
-                                                                            <Show 
+                                                                            <Show
                                                                                 when=move || thinking_opt_for_show.is_some()
                                                                                 fallback=move || view! {}
                                                                             >
-                                                                                <ThinkingBlock 
-                                                                                    thinking=thinking_opt_for_block.clone().unwrap_or_default() 
-                                                                                    is_thinking=is_thinking_active 
+                                                                                <ThinkingBlock
+                                                                                    thinking=thinking_opt_for_block.clone().unwrap_or_default()
+                                                                                    is_thinking=is_thinking_active
                                                                                     duration_ms=reasoning_duration
                                                                                 />
                                                                             </Show>
@@ -2441,9 +2487,9 @@ pub fn App() -> impl IntoView {
                                                                     let is_thinking_active = is_streaming.get() && idx == messages.get().len() - 1;
                                                                     view! {
                                                                         <div class="flex flex-col w-full my-1">
-                                                                            <ThinkingBlock 
-                                                                                thinking=text.clone() 
-                                                                                is_thinking=is_thinking_active 
+                                                                            <ThinkingBlock
+                                                                                thinking=text.clone()
+                                                                                is_thinking=is_thinking_active
                                                                                 duration_ms=reasoning_duration
                                                                             />
                                                                         </div>
@@ -2468,7 +2514,7 @@ pub fn App() -> impl IntoView {
                                                                             "📄 Document (" {mime_type.clone()} "): " {path_desc.to_string()}
                                                                         </div>
                                                                     }.into_any()
-                                                                    
+
                                                                 }
                                                                 ContentBlock::Audio { path, duration_secs } => {
                                                                     view! {
@@ -2521,11 +2567,11 @@ pub fn App() -> impl IntoView {
                                                 let active_ver = msg.versions.get(msg.active_version).cloned();
                                                 let total_versions = msg.versions.len();
                                                 let active_version_idx = msg.active_version;
-                                                
+
                                                 let show_stats = active_ver.as_ref().map(|v| v.metadata.ttft_ms.is_some() || v.metadata.tokens_per_sec.is_some() || v.metadata.stop_reason.is_some()).unwrap_or(false);
-                                                
+
                                                 view! {
-                                                    <div class="mt-4 flex flex-col gap-1.5 font-sans">
+                                                    <div class="mt-2.5 flex flex-col gap-1.5 font-sans">
                                                         <Show when=move || show_stats>
                                                             {
                                                                 let ver = active_ver.clone().unwrap();
@@ -2724,8 +2770,8 @@ pub fn App() -> impl IntoView {
                 </div>
 
                 // Bottom Prompt Box / Input
-                <footer class="p-6 border-t border-theme-border/60 bg-theme-bg shrink-0 theme-transition">
-                    <form on:submit=send_message class="max-w-4xl mx-auto flex flex-col gap-3 bg-theme-panel border border-theme-border/80 rounded-2xl p-3 shadow-sm relative theme-transition">
+                <footer class="p-3.5 border-t border-theme-border/60 bg-theme-bg shrink-0 theme-transition">
+                                                    <form on:submit=send_message class="max-w-4xl mx-auto flex flex-col gap-2 bg-theme-panel border border-theme-border/80 rounded-2xl p-2.5 shadow-sm relative theme-transition">
                         // Attached Image Thumbnail Preview
                         <Show
                             when=move || attached_image.get().is_some()
@@ -3148,14 +3194,14 @@ pub fn App() -> impl IntoView {
                                                         {move || {
                                                             let selected_models = new_conn_enabled_models.get();
                                                             let current_configs = new_conn_reasoning_configs.get();
-                                                            
+
                                                             selected_models.into_iter().map(|model_id| {
                                                                 let m_id = model_id.clone();
                                                                 let m_id_checkbox = model_id.clone();
                                                                 let m_id_raw = model_id.clone();
                                                                 let m_id_start = model_id.clone();
                                                                 let m_id_end = model_id.clone();
-                                                                
+
                                                                 let config = current_configs.iter().find(|c| c.model_id == m_id).cloned().unwrap_or_else(|| {
                                                                     ModelReasoningConfig {
                                                                         model_id: m_id.clone(),
@@ -3165,19 +3211,19 @@ pub fn App() -> impl IntoView {
                                                                         end_tag: "</think>".to_string(),
                                                                     }
                                                                 });
-                                                                
+
                                                                 let enabled = config.enabled;
                                                                 let is_raw_stream = config.is_raw_stream;
                                                                 let start_tag = config.start_tag.clone();
                                                                 let end_tag = config.end_tag.clone();
-                                                                
+
                                                                 view! {
                                                                     <div class="p-3 rounded-xl border border-theme-border/60 bg-theme-bg/10 space-y-2">
                                                                         <div class="flex items-center justify-between">
                                                                             <span class="font-mono text-xs font-semibold text-theme-text truncate max-w-[60%] select-none">{m_id.clone()}</span>
-                                                                            
+
                                                                             <label class="flex items-center gap-1.5 cursor-pointer text-xs select-none">
-                                                                                <input 
+                                                                                <input
                                                                                     type="checkbox"
                                                                                     prop:checked=enabled
                                                                                     on:change=move |ev| {
@@ -3194,7 +3240,7 @@ pub fn App() -> impl IntoView {
                                                                                 <span class="text-theme-muted font-medium">"Reasoning"</span>
                                                                             </label>
                                                                         </div>
-                                                                        
+
                                                                         <Show when=move || enabled fallback=move || view! {}>
                                                                             {
                                                                                 let m_id_raw_inner = m_id_raw.clone();
@@ -3205,7 +3251,7 @@ pub fn App() -> impl IntoView {
                                                                                 view! {
                                                                                     <div class="pt-1.5 space-y-2 border-t border-theme-border/40">
                                                                                         <label class="flex items-center gap-1.5 cursor-pointer text-xs select-none">
-                                                                                            <input 
+                                                                                            <input
                                                                                                 type="checkbox"
                                                                                                 prop:checked=is_raw_stream
                                                                                                 on:change=move |ev| {
@@ -3221,7 +3267,7 @@ pub fn App() -> impl IntoView {
                                                                                             />
                                                                                             <span class="text-theme-muted font-medium">"Expect tags in raw text stream"</span>
                                                                                         </label>
-                                                                                        
+
                                                                                         <Show when=move || is_raw_stream fallback=move || view! {}>
                                                                                             {
                                                                                                 let m_id_start_innermost = m_id_start_inner.clone();
@@ -3232,7 +3278,7 @@ pub fn App() -> impl IntoView {
                                                                                                     <div class="grid grid-cols-2 gap-2 pt-1">
                                                                                                         <div class="space-y-1">
                                                                                                             <label class="text-[10px] font-semibold text-theme-muted">"Start Tag"</label>
-                                                                                                            <input 
+                                                                                                            <input
                                                                                                                 type="text"
                                                                                                                 prop:value=start_tag.clone()
                                                                                                                 on:input=move |ev| {
@@ -3249,7 +3295,7 @@ pub fn App() -> impl IntoView {
                                                                                                         </div>
                                                                                                         <div class="space-y-1">
                                                                                                             <label class="text-[10px] font-semibold text-theme-muted">"End Tag"</label>
-                                                                                                            <input 
+                                                                                                            <input
                                                                                                                 type="text"
                                                                                                                 prop:value=end_tag.clone()
                                                                                                                 on:input=move |ev| {

@@ -166,6 +166,16 @@ fn save_settings(app: tauri::AppHandle, settings: settings::AppSettings) -> Resu
     settings::save_settings(&app, &settings)
 }
 
+#[tauri::command]
+fn save_thread_asset(
+    app: tauri::AppHandle,
+    thread_id: String,
+    filename: String,
+    base64_data: String,
+) -> Result<String, String> {
+    history::save_thread_asset(&app, &thread_id, &filename, &base64_data)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -185,7 +195,8 @@ pub fn run() {
             load_connections,
             delete_connection,
             get_settings,
-            save_settings
+            save_settings,
+            save_thread_asset
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

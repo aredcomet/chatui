@@ -70,6 +70,70 @@ pub fn delete_conversation(app: &AppHandle, id: &str) -> Result<(), String> {
         fs::remove_file(file_path)
             .map_err(|e| format!("Failed to delete conversation file: {}", e))?;
     }
+    // Also try to remove assets subdirectory for this thread
+    if let Ok(assets_dir) = get_assets_dir(app, id) {
+        if assets_dir.exists() {
+            let _ = fs::remove_dir_all(assets_dir);
+        }
+    }
     Ok(())
 }
+
+fn get_assets_dir(app: &AppHandle, thread_id: &str) -> Result<PathBuf, String> {
+    let settings = settings::load_settings(app);
+    let mut dir = if let Some(ref path_str) = settings.custom_storage_path {
+        PathBuf::from(path_str)
+    } else {
+        app.path()
+            .app_data_dir()
+            .map_err(|e| format!("Failed to get app data directory: {}", e))?
+    };
+    dir.push("assets");
+    dir.push(thread_id);
+    if !dir.exists() {
+        fs::create_dir_all(&dir)
+            .map_err(|e| format!("Failed to create assets directory: {}", e))?;
+    }
+    Ok(dir)
+}
+
+pub fn save_thread_asset(app: &AppHandle, thread_id: &str, filename: &str, base64_data: &str) -> Result<String, String> {
+    use base64::Engine;
+    let dir = get_assets_dir(app, thread_id)?;
+    let target_path = dir.join(filename);
+    
+    let bytes = base64::prelude::BASE64_STANDARD.decode(base64_data)
+        .map_err(|e| format!("Failed to decode base64 asset: {}", e))?;
+        
+    fs::write(&target_path, bytes)
+        .map_err(|e| format!("Failed to write asset file: {}", e))?;
+        
+    Ok(target_path.to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_asset_save_decoding() {
+        let temp_dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        fs::create_dir_all(&temp_dir).unwrap();
+        
+        let filename = "test.txt";
+        let base64_data = "SGVsbG8gQXNzZXQ="; // "Hello Asset"
+        let target_path = temp_dir.join(filename);
+        
+        use base64::Engine;
+        let bytes = base64::prelude::BASE64_STANDARD.decode(base64_data).unwrap();
+        fs::write(&target_path, bytes).unwrap();
+        
+        assert!(target_path.exists());
+        let content = fs::read_to_string(target_path).unwrap();
+        assert_eq!(content, "Hello Asset");
+        
+        fs::remove_dir_all(temp_dir).unwrap();
+    }
+}
+
 

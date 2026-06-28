@@ -4,7 +4,7 @@ use shared::ChatConversation;
 use std::path::Path;
 use wasm_bindgen::prelude::Closure;
 use wasm_bindgen::JsCast;
-use crate::app::context::AppContext;
+use crate::app::context::{AppContext, InlineCreationTarget};
 use crate::app::bindings::{
     invoke, invoke_result, SaveConversationArgs, DeleteConversationArgs,
     ChatTreeNode, CreateFolderArgs, MoveItemArgs, DeleteFolderRecursiveArgs,
@@ -28,7 +28,6 @@ struct ContextMenuState {
 #[derive(Clone, Debug, PartialEq)]
 enum ModalAction {
     None,
-    CreateFolder { parent_path: Option<String> },
     RenameFolder { path: String, current_name: String },
     RenameChat { id: String, current_title: String, path: String },
     DeleteChat { id: String, name: String },
@@ -113,7 +112,7 @@ pub fn Sidebar() -> impl IntoView {
         }
     };
 
-    let create_chat_in_folder = move |folder_path: Option<String>| {
+    let create_chat_in_folder_with_title = move |folder_path: Option<String>, title: String| {
         if ctx.is_streaming.get_untracked() {
             return;
         }
@@ -148,7 +147,7 @@ pub fn Sidebar() -> impl IntoView {
 
         let new_convo = ChatConversation {
             id: uuid.clone(),
-            title: format!("New Chat ({})", provider.to_string()),
+            title,
             model,
             provider,
             created_at: chrono::Utc::now(),
@@ -210,23 +209,31 @@ pub fn Sidebar() -> impl IntoView {
         }
     };
 
-    let execute_modal_action = move |_| {
-        let action = modal_action.get_untracked();
-        let input_val = modal_input.get_untracked();
-        let set_chat_tree_c = ctx.set_chat_tree;
-        let set_conversations_c = ctx.set_conversations;
+    let commit_inline_creation = move || {
+        let state = ctx.inline_creation.get_untracked();
+        let input_val = ctx.inline_input_text.get_untracked();
 
-        match action {
-            ModalAction::CreateFolder { parent_path } => {
-                if input_val.trim().is_empty() {
-                    return;
-                }
+        ctx.set_inline_creation.set(InlineCreationTarget::None);
+        ctx.set_inline_input_text.set(String::new());
+
+        if input_val.trim().is_empty() {
+            return;
+        }
+
+        let title = input_val.trim().to_string();
+
+        match state {
+            InlineCreationTarget::Chat { parent_path } => {
+                create_chat_in_folder_with_title(parent_path, title);
+            }
+            InlineCreationTarget::Folder { parent_path } => {
                 let relative_path = if let Some(parent) = parent_path {
-                    Path::new(&parent).join(input_val.trim()).to_string_lossy().to_string()
+                    Path::new(&parent).join(&title).to_string_lossy().to_string()
                 } else {
-                    input_val.trim().to_string()
+                    title.clone()
                 };
 
+                let set_chat_tree_c = ctx.set_chat_tree;
                 spawn_local(async move {
                     let args = serde_wasm_bindgen::to_value(&CreateFolderArgs {
                         relative_path,
@@ -239,6 +246,17 @@ pub fn Sidebar() -> impl IntoView {
                     }
                 });
             }
+            InlineCreationTarget::None => {}
+        }
+    };
+
+    let execute_modal_action = move |_| {
+        let action = modal_action.get_untracked();
+        let input_val = modal_input.get_untracked();
+        let set_chat_tree_c = ctx.set_chat_tree;
+        let set_conversations_c = ctx.set_conversations;
+
+        match action {
             ModalAction::RenameFolder { path, current_name } => {
                 if input_val.trim().is_empty() || input_val.trim() == current_name {
                     set_modal_action.set(ModalAction::None);
@@ -438,6 +456,90 @@ pub fn Sidebar() -> impl IntoView {
         }
     };
 
+    // Root-level inline inputs
+    let view_inline_chat_input = move |_: Option<String>| {
+        let input_ref = NodeRef::<leptos::html::Input>::new();
+        Effect::new(move |_| {
+            if let Some(el) = input_ref.get() {
+                let _ = el.focus();
+            }
+        });
+        view! {
+            <div
+                style="padding-left: 0.5rem;"
+                class="flex items-center gap-2 py-1.5 pr-2 rounded-lg bg-theme-bg/40 text-sm border border-theme-accent/50 animate-scale-in"
+            >
+                <span class="text-theme-muted/50 shrink-0">
+                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                    </svg>
+                </span>
+                <input
+                    type="text"
+                    class="w-full bg-transparent text-theme-text outline-none text-sm"
+                    placeholder="Chat name..."
+                    node_ref=input_ref
+                    prop:value=ctx.inline_input_text
+                    on:input=move |ev| ctx.set_inline_input_text.set(event_target_value(&ev))
+                    on:keydown=move |ev: web_sys::KeyboardEvent| {
+                        if ev.key() == "Enter" {
+                            commit_inline_creation();
+                        } else if ev.key() == "Escape" {
+                            ctx.set_inline_creation.set(InlineCreationTarget::None);
+                        }
+                    }
+                    on:blur=move |_| {
+                        commit_inline_creation();
+                    }
+                />
+            </div>
+        }
+    };
+
+    let view_inline_folder_input = move |_: Option<String>| {
+        let input_ref = NodeRef::<leptos::html::Input>::new();
+        Effect::new(move |_| {
+            if let Some(el) = input_ref.get() {
+                let _ = el.focus();
+            }
+        });
+        view! {
+            <div
+                style="padding-left: 0.5rem;"
+                class="flex items-center gap-1.5 py-1.5 pr-2 rounded-lg bg-theme-bg/40 text-sm border border-theme-accent/50 animate-scale-in"
+            >
+                <span class="text-theme-muted/80">
+                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
+                    </svg>
+                </span>
+                <span class="text-theme-accent/80 shrink-0">
+                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                    </svg>
+                </span>
+                <input
+                    type="text"
+                    class="w-full bg-transparent text-theme-text outline-none text-sm"
+                    placeholder="Folder name..."
+                    node_ref=input_ref
+                    prop:value=ctx.inline_input_text
+                    on:input=move |ev| ctx.set_inline_input_text.set(event_target_value(&ev))
+                    on:keydown=move |ev: web_sys::KeyboardEvent| {
+                        if ev.key() == "Enter" {
+                            commit_inline_creation();
+                        } else if ev.key() == "Escape" {
+                            ctx.set_inline_creation.set(InlineCreationTarget::None);
+                        }
+                    }
+                    on:blur=move |_| {
+                        commit_inline_creation();
+                    }
+                />
+            </div>
+        }
+    };
+
     view! {
         <aside
             on:contextmenu=handle_root_contextmenu
@@ -446,7 +548,10 @@ pub fn Sidebar() -> impl IntoView {
             // Sidebar Header
             <div class="p-4 border-b border-theme-border/60 flex flex-col gap-2.5">
                 <button
-                    on:click=move |_| create_chat_in_folder(None)
+                    on:click=move |_| {
+                        ctx.set_inline_creation.set(InlineCreationTarget::Chat { parent_path: None });
+                        ctx.set_inline_input_text.set(String::new());
+                    }
                     disabled=move || ctx.is_streaming.get()
                     class="w-full flex items-center justify-center gap-2 py-2 px-4 rounded-xl border border-theme-border bg-theme-bg/60 text-theme-text font-medium hover:bg-theme-bg hover:border-theme-accent/50 transition-all active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed theme-transition"
                 >
@@ -461,8 +566,8 @@ pub fn Sidebar() -> impl IntoView {
                     <div class="flex items-center gap-1.5">
                         <button
                             on:click=move |_| {
-                                set_modal_action.set(ModalAction::CreateFolder { parent_path: None });
-                                set_modal_input.set(String::new());
+                                ctx.set_inline_creation.set(InlineCreationTarget::Folder { parent_path: None });
+                                ctx.set_inline_input_text.set(String::new());
                             }
                             class="p-1 rounded hover:bg-theme-bg hover:text-theme-text transition-colors"
                             title="New Folder"
@@ -508,7 +613,7 @@ pub fn Sidebar() -> impl IntoView {
                 class="flex-1 overflow-y-auto px-2 py-3 space-y-1.5 scrollbar-thin select-none"
             >
                 <Show
-                    when=move || !ctx.chat_tree.get().is_empty()
+                    when=move || !ctx.chat_tree.get().is_empty() || ctx.inline_creation.get() != InlineCreationTarget::None
                     fallback=move || view! {
                         <div class="flex flex-col items-center justify-center h-full text-center p-4 text-theme-muted/60 select-none">
                             <svg class="w-8 h-8 mb-2 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
@@ -518,20 +623,37 @@ pub fn Sidebar() -> impl IntoView {
                         </div>
                     }
                 >
-                    {move || sorted_root_tree().into_iter().map(|node| {
-                        let on_sel = Callback::new(move |id| select_conversation(id));
-                        let on_ctx = Callback::new(on_context_menu_cb);
-                        let on_drag = Callback::new(on_drag_start_cb);
-                        view! {
-                            <FolderNode
-                                node=node
-                                depth=0
-                                on_select_chat=on_sel
-                                on_context_menu=on_ctx
-                                on_drag_start=on_drag
-                            />
+                    {move || {
+                        let list = sorted_root_tree();
+                        let mut views: Vec<AnyView> = list.into_iter().map(|node| {
+                            let on_sel = Callback::new(move |id| select_conversation(id));
+                            let on_ctx = Callback::new(on_context_menu_cb);
+                            let on_drag = Callback::new(on_drag_start_cb);
+                            let on_comm = Callback::new(move |_| commit_inline_creation());
+                            view! {
+                                <FolderNode
+                                    node=node
+                                    depth=0
+                                    on_select_chat=on_sel
+                                    on_context_menu=on_ctx
+                                    on_drag_start=on_drag
+                                    on_commit_creation=on_comm
+                                />
+                            }.into_any()
+                        }).collect();
+
+                        let inline_state = ctx.inline_creation.get();
+                        match inline_state {
+                            InlineCreationTarget::Chat { parent_path: None } => {
+                                views.insert(0, view_inline_chat_input(None).into_any());
+                            }
+                            InlineCreationTarget::Folder { parent_path: None } => {
+                                views.insert(0, view_inline_folder_input(None).into_any());
+                            }
+                            _ => {}
                         }
-                    }).collect::<Vec<_>>()}
+                        views
+                    }}
                 </Show>
             </div>
 
@@ -575,15 +697,20 @@ pub fn Sidebar() -> impl IntoView {
                                 let n4 = name.clone();
                                 view! {
                                     <button
-                                        on:click=move |_| create_chat_in_folder(Some(p1.clone()))
+                                        on:click=move |_| {
+                                            ctx.set_inline_creation.set(InlineCreationTarget::Chat { parent_path: Some(p1.clone()) });
+                                            ctx.set_inline_input_text.set(String::new());
+                                            ctx.set_expanded_folders.update(|set| { set.insert(p1.clone()); });
+                                        }
                                         class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-theme-bg hover:text-theme-text text-left transition-colors font-medium"
                                     >
                                         <span>"New Chat"</span>
                                     </button>
                                     <button
                                         on:click=move |_| {
-                                            set_modal_action.set(ModalAction::CreateFolder { parent_path: Some(p2.clone()) });
-                                            set_modal_input.set(String::new());
+                                            ctx.set_inline_creation.set(InlineCreationTarget::Folder { parent_path: Some(p2.clone()) });
+                                            ctx.set_inline_input_text.set(String::new());
+                                            ctx.set_expanded_folders.update(|set| { set.insert(p2.clone()); });
                                         }
                                         class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-theme-bg hover:text-theme-text text-left transition-colors font-medium"
                                     >
@@ -655,15 +782,18 @@ pub fn Sidebar() -> impl IntoView {
                             ContextMenuTarget::Root => {
                                 view! {
                                     <button
-                                        on:click=move |_| create_chat_in_folder(None)
+                                        on:click=move |_| {
+                                            ctx.set_inline_creation.set(InlineCreationTarget::Chat { parent_path: None });
+                                            ctx.set_inline_input_text.set(String::new());
+                                        }
                                         class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-theme-bg hover:text-theme-text text-left transition-colors font-medium"
                                     >
                                         <span>"New Chat"</span>
                                     </button>
                                     <button
                                         on:click=move |_| {
-                                            set_modal_action.set(ModalAction::CreateFolder { parent_path: None });
-                                            set_modal_input.set(String::new());
+                                            ctx.set_inline_creation.set(InlineCreationTarget::Folder { parent_path: None });
+                                            ctx.set_inline_input_text.set(String::new());
                                         }
                                         class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-theme-bg hover:text-theme-text text-left transition-colors font-medium"
                                     >
@@ -685,46 +815,13 @@ pub fn Sidebar() -> impl IntoView {
                 </div>
             </Show>
 
-            // ─── MODAL CONFIRMATION OVERLAYS ───
+            // ─── MODAL CONFIRMATION OVERLAYS (Renaming & Deleting) ───
             <Show when=move || modal_action.get() != ModalAction::None>
                 <div class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 select-text">
                     <div class="w-full max-w-sm bg-theme-panel border border-theme-border/80 rounded-2xl p-5 shadow-2xl space-y-4 theme-transition animate-scale-in">
                         {move || {
                             let action = modal_action.get();
                             match action {
-                                ModalAction::CreateFolder { .. } => view! {
-                                    <>
-                                        <h3 class="text-sm font-semibold text-theme-text">"Create Folder"</h3>
-                                        <input
-                                            type="text"
-                                            placeholder="Folder name"
-                                            class="w-full bg-theme-input border border-theme-border/80 rounded-xl px-3 py-2 text-sm text-theme-text placeholder-theme-muted/50 outline-none focus:border-theme-accent theme-transition"
-                                            prop:value=modal_input
-                                            on:input=move |ev| set_modal_input.set(event_target_value(&ev))
-                                            on:keydown=move |ev: web_sys::KeyboardEvent| {
-                                                if ev.key() == "Enter" {
-                                                    execute_modal_action(());
-                                                } else if ev.key() == "Escape" {
-                                                    set_modal_action.set(ModalAction::None);
-                                                }
-                                            }
-                                        />
-                                        <div class="flex items-center justify-end gap-2 pt-2">
-                                            <button
-                                                on:click=move |_| set_modal_action.set(ModalAction::None)
-                                                class="px-3 py-1.5 rounded-lg text-xs font-semibold text-theme-muted hover:bg-theme-bg/60 transition-colors"
-                                            >
-                                                "Cancel"
-                                            </button>
-                                            <button
-                                                on:click=move |_| execute_modal_action(())
-                                                class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-theme-accent text-theme-bg hover:opacity-90 transition-all"
-                                            >
-                                                "Create"
-                                            </button>
-                                        </div>
-                                    </>
-                                }.into_any(),
                                 ModalAction::RenameFolder { .. } => view! {
                                     <>
                                         <h3 class="text-sm font-semibold text-theme-text">"Rename Folder"</h3>
@@ -853,11 +950,13 @@ fn FolderNode(
     on_select_chat: Callback<String>,
     on_context_menu: Callback<(web_sys::MouseEvent, ContextMenuTarget)>,
     on_drag_start: Callback<(web_sys::DragEvent, String, bool)>,
+    on_commit_creation: Callback<()>,
 ) -> impl IntoView {
     let ctx = use_context::<AppContext>().expect("AppContext not found");
     
     let path_clone = node.path.clone();
     let path_clone2 = node.path.clone();
+    let path_stored = StoredValue::new(node.path.clone());
     let is_expanded = move || ctx.expanded_folders.get().contains(&path_clone);
     let is_expanded2 = move || ctx.expanded_folders.get().contains(&path_clone2);
     
@@ -961,6 +1060,113 @@ fn FolderNode(
     };
     
     let indent_style = format!("padding-left: {}rem;", (depth as f32) * 0.75 + 0.5);
+
+    let view_inline_chat_input = {
+        let on_commit = on_commit_creation.clone();
+        let d = depth + 1;
+        move || {
+            let input_ref = NodeRef::<leptos::html::Input>::new();
+            Effect::new(move |_| {
+                if let Some(el) = input_ref.get() {
+                    let _ = el.focus();
+                }
+            });
+            let ind = format!("padding-left: {}rem;", (d as f32) * 0.75 + 0.5);
+            let on_c = on_commit.clone();
+            view! {
+                <div
+                    style=ind
+                    class="flex items-center gap-2 py-1.5 pr-2 rounded-lg bg-theme-bg/40 text-sm border border-theme-accent/50 animate-scale-in"
+                >
+                    <span class="text-theme-muted/50 shrink-0">
+                        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                        </svg>
+                    </span>
+                    <input
+                        type="text"
+                        class="w-full bg-transparent text-theme-text outline-none text-sm"
+                        placeholder="Chat name..."
+                        node_ref=input_ref
+                        prop:value=ctx.inline_input_text
+                        on:input=move |ev| ctx.set_inline_input_text.set(event_target_value(&ev))
+                        on:keydown={
+                            let on_c_key = on_c.clone();
+                            move |ev: web_sys::KeyboardEvent| {
+                                if ev.key() == "Enter" {
+                                    on_c_key.run(());
+                                } else if ev.key() == "Escape" {
+                                    ctx.set_inline_creation.set(InlineCreationTarget::None);
+                                }
+                            }
+                        }
+                        on:blur={
+                            let on_c_blur = on_c.clone();
+                            move |_| {
+                                on_c_blur.run(());
+                            }
+                        }
+                    />
+                </div>
+            }
+        }
+    };
+
+    let view_inline_folder_input = {
+        let on_commit = on_commit_creation.clone();
+        let d = depth + 1;
+        move || {
+            let input_ref = NodeRef::<leptos::html::Input>::new();
+            Effect::new(move |_| {
+                if let Some(el) = input_ref.get() {
+                    let _ = el.focus();
+                }
+            });
+            let ind = format!("padding-left: {}rem;", (d as f32) * 0.75 + 0.5);
+            let on_c = on_commit.clone();
+            view! {
+                <div
+                    style=ind
+                    class="flex items-center gap-1.5 py-1.5 pr-2 rounded-lg bg-theme-bg/40 text-sm border border-theme-accent/50 animate-scale-in"
+                >
+                    <span class="text-theme-muted/80">
+                        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
+                        </svg>
+                    </span>
+                    <span class="text-theme-accent/80 shrink-0">
+                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                        </svg>
+                    </span>
+                    <input
+                        type="text"
+                        class="w-full bg-transparent text-theme-text outline-none text-sm"
+                        placeholder="Folder name..."
+                        node_ref=input_ref
+                        prop:value=ctx.inline_input_text
+                        on:input=move |ev| ctx.set_inline_input_text.set(event_target_value(&ev))
+                        on:keydown={
+                            let on_c_key = on_c.clone();
+                            move |ev: web_sys::KeyboardEvent| {
+                                if ev.key() == "Enter" {
+                                    on_c_key.run(());
+                                } else if ev.key() == "Escape" {
+                                    ctx.set_inline_creation.set(InlineCreationTarget::None);
+                                }
+                            }
+                        }
+                        on:blur={
+                            let on_c_blur = on_c.clone();
+                            move |_| {
+                                on_c_blur.run(());
+                            }
+                        }
+                    />
+                </div>
+            }
+        }
+    };
     
     if node.is_dir {
         let children_stored = StoredValue::new(node.children.clone().unwrap_or_default());
@@ -1032,10 +1238,11 @@ fn FolderNode(
                                     }
                                 });
                             }
-                            list.into_iter().map(|child| {
+                            let mut views: Vec<AnyView> = list.into_iter().map(|child| {
                                 let on_sel = on_select_chat.clone();
                                 let on_ctx = on_context_menu.clone();
                                 let on_drag = on_drag_start.clone();
+                                let on_comm = on_commit_creation.clone();
                                 view! {
                                     <FolderNode
                                         node=child
@@ -1043,9 +1250,23 @@ fn FolderNode(
                                         on_select_chat=on_sel
                                         on_context_menu=on_ctx
                                         on_drag_start=on_drag
+                                        on_commit_creation=on_comm
                                     />
+                                }.into_any()
+                            }).collect();
+                            
+                            let path_val = path_stored.get_value();
+                            let inline_state = ctx.inline_creation.get();
+                            match inline_state {
+                                InlineCreationTarget::Chat { parent_path: Some(ref p) } if p == &path_val => {
+                                    views.insert(0, view_inline_chat_input().into_any());
                                 }
-                            }).collect::<Vec<_>>()
+                                InlineCreationTarget::Folder { parent_path: Some(ref p) } if p == &path_val => {
+                                    views.insert(0, view_inline_folder_input().into_any());
+                                }
+                                _ => {}
+                            }
+                            views
                         }}
                     </div>
                 </Show>

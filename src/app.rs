@@ -116,6 +116,10 @@ pub fn App() -> impl IntoView {
     let (sort_alphabetical, set_sort_alphabetical) = signal(false);
     let (expanded_folders, set_expanded_folders) = signal(std::collections::HashSet::<String>::new());
 
+    // Inline entity creation signals
+    let (inline_creation, set_inline_creation) = signal(context::InlineCreationTarget::None);
+    let (inline_input_text, set_inline_input_text) = signal(String::new());
+
     // Context sharing
     let ctx = AppContext {
         conversations,
@@ -161,6 +165,10 @@ pub fn App() -> impl IntoView {
         set_sort_alphabetical,
         expanded_folders,
         set_expanded_folders,
+        inline_creation,
+        set_inline_creation,
+        inline_input_text,
+        set_inline_input_text,
     };
     provide_context(ctx);
 

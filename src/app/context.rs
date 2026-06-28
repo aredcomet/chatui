@@ -4,6 +4,13 @@ use super::theme::AppTheme;
 use super::bindings::ChatTreeNode;
 use std::collections::HashSet;
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum InlineCreationTarget {
+    None,
+    Chat { parent_path: Option<String> },
+    Folder { parent_path: Option<String> },
+}
+
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
 pub struct AppContext {
@@ -52,4 +59,10 @@ pub struct AppContext {
     pub set_sort_alphabetical: WriteSignal<bool>,
     pub expanded_folders: ReadSignal<HashSet<String>>,
     pub set_expanded_folders: WriteSignal<HashSet<String>>,
+
+    // Inline entity creation signals
+    pub inline_creation: ReadSignal<InlineCreationTarget>,
+    pub set_inline_creation: WriteSignal<InlineCreationTarget>,
+    pub inline_input_text: ReadSignal<String>,
+    pub set_inline_input_text: WriteSignal<String>,
 }

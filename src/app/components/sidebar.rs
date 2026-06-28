@@ -443,14 +443,16 @@ pub fn Sidebar() -> impl IntoView {
         });
     };
 
-    let on_context_menu_cb = move |(ev, target): (web_sys::MouseEvent, ContextMenuTarget)| {
+    let on_context_menu_cb = move |(ev, target, coords): (web_sys::MouseEvent, ContextMenuTarget, Option<(f64, f64)>)| {
+        let (x, y) = coords.unwrap_or_else(|| (ev.client_x() as f64, ev.client_y() as f64));
         set_context_menu.set(ContextMenuState {
             visible: true,
-            x: ev.client_x() as f64,
-            y: ev.client_y() as f64,
+            x,
+            y,
             target,
         });
     };
+    let on_context_menu_cb_stored = StoredValue::new(on_context_menu_cb);
 
     let on_drag_start_cb = move |(ev, path, is_dir): (web_sys::DragEvent, String, bool)| {
         if let Some(dt) = ev.data_transfer() {
@@ -469,14 +471,9 @@ pub fn Sidebar() -> impl IntoView {
         });
         view! {
             <div
-                style="padding-left: 0.5rem;"
-                class="flex items-center gap-2 py-1.5 pr-2 rounded-lg bg-theme-bg/40 text-sm border border-theme-accent/50 animate-scale-in"
+                style="padding-left: 1.75rem;"
+                class="flex items-center py-1.5 pr-2 rounded-lg bg-theme-bg/40 text-sm border border-theme-accent/50 animate-scale-in"
             >
-                <span class="text-theme-muted/50 shrink-0">
-                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                    </svg>
-                </span>
                 <input
                     type="text"
                     class="w-full bg-transparent text-theme-text outline-none text-sm"
@@ -527,11 +524,6 @@ pub fn Sidebar() -> impl IntoView {
                 <span class="text-theme-muted/80">
                     <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
                         <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
-                    </svg>
-                </span>
-                <span class="text-theme-accent/80 shrink-0">
-                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
                     </svg>
                 </span>
                 <input
@@ -656,7 +648,9 @@ pub fn Sidebar() -> impl IntoView {
                         let list = sorted_root_tree();
                         let mut views: Vec<AnyView> = list.into_iter().map(|node| {
                             let on_sel = Callback::new(move |id| select_conversation(id));
-                            let on_ctx = Callback::new(on_context_menu_cb);
+                            let on_ctx = Callback::new(move |(ev, target, coords)| {
+                                on_context_menu_cb_stored.get_value()((ev, target, coords));
+                            });
                             let on_drag = Callback::new(on_drag_start_cb);
                             let on_comm = Callback::new(move |_| commit_inline_creation());
                             view! {
@@ -731,7 +725,7 @@ pub fn Sidebar() -> impl IntoView {
                                             ctx.set_inline_input_text.set(String::new());
                                             ctx.set_expanded_folders.update(|set| { set.insert(p1.clone()); });
                                         }
-                                        class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-theme-bg hover:text-theme-text text-left transition-colors font-medium"
+                                        class="w-full flex items-center justify-between px-3 py-1.5 rounded-lg hover:bg-theme-bg hover:text-theme-text text-left transition-colors font-medium"
                                     >
                                         <span>"New Chat"</span>
                                     </button>
@@ -741,7 +735,7 @@ pub fn Sidebar() -> impl IntoView {
                                             ctx.set_inline_input_text.set(String::new());
                                             ctx.set_expanded_folders.update(|set| { set.insert(p2.clone()); });
                                         }
-                                        class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-theme-bg hover:text-theme-text text-left transition-colors font-medium"
+                                        class="w-full flex items-center justify-between px-3 py-1.5 rounded-lg hover:bg-theme-bg hover:text-theme-text text-left transition-colors font-medium"
                                     >
                                         <span>"Create Subdirectory"</span>
                                     </button>
@@ -750,7 +744,7 @@ pub fn Sidebar() -> impl IntoView {
                                             set_modal_action.set(ModalAction::RenameFolder { path: p3.clone(), current_name: n3.clone() });
                                             set_modal_input.set(n3.clone());
                                         }
-                                        class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-theme-bg hover:text-theme-text text-left transition-colors font-medium"
+                                        class="w-full flex items-center justify-between px-3 py-1.5 rounded-lg hover:bg-theme-bg hover:text-theme-text text-left transition-colors font-medium"
                                     >
                                         <span>"Rename"</span>
                                     </button>
@@ -759,9 +753,12 @@ pub fn Sidebar() -> impl IntoView {
                                         on:click=move |_| {
                                             set_modal_action.set(ModalAction::DeleteFolder { path: p4.clone(), name: n4.clone() });
                                         }
-                                        class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-theme-bg text-theme-destructive hover:text-theme-destructive-hover text-left transition-colors font-medium"
+                                        class="w-full flex items-center justify-between px-3 py-1.5 rounded-lg text-theme-text hover:bg-theme-destructive/10 hover:text-theme-destructive transition-colors font-medium group"
                                     >
                                         <span>"Delete"</span>
+                                        <svg class="w-3.5 h-3.5 text-theme-muted group-hover:text-theme-destructive transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                            <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                        </svg>
                                     </button>
                                 }.into_any()
                             }
@@ -778,7 +775,7 @@ pub fn Sidebar() -> impl IntoView {
                                 view! {
                                     <button
                                         on:click=move |_| select_conversation(id_c.clone())
-                                        class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-theme-bg hover:text-theme-text text-left transition-colors font-medium"
+                                        class="w-full flex items-center justify-between px-3 py-1.5 rounded-lg hover:bg-theme-bg hover:text-theme-text text-left transition-colors font-medium"
                                     >
                                         <span>"Select"</span>
                                     </button>
@@ -787,13 +784,13 @@ pub fn Sidebar() -> impl IntoView {
                                             set_modal_action.set(ModalAction::RenameChat { id: id_r.clone(), current_title: t_r.clone(), path: p_r.clone() });
                                             set_modal_input.set(t_r.clone());
                                         }
-                                        class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-theme-bg hover:text-theme-text text-left transition-colors font-medium"
+                                        class="w-full flex items-center justify-between px-3 py-1.5 rounded-lg hover:bg-theme-bg hover:text-theme-text text-left transition-colors font-medium"
                                     >
                                         <span>"Rename"</span>
                                     </button>
                                     <button
                                         on:click=move |_| duplicate_chat(id_d.clone(), t_d.clone(), p_d.clone())
-                                        class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-theme-bg hover:text-theme-text text-left transition-colors font-medium"
+                                        class="w-full flex items-center justify-between px-3 py-1.5 rounded-lg hover:bg-theme-bg hover:text-theme-text text-left transition-colors font-medium"
                                     >
                                         <span>"Duplicate"</span>
                                     </button>
@@ -802,9 +799,12 @@ pub fn Sidebar() -> impl IntoView {
                                         on:click=move |_| {
                                             set_modal_action.set(ModalAction::DeleteChat { id: id_del.clone(), name: t_del.clone() });
                                         }
-                                        class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-theme-bg text-theme-destructive hover:text-theme-destructive-hover text-left transition-colors font-medium"
+                                        class="w-full flex items-center justify-between px-3 py-1.5 rounded-lg text-theme-text hover:bg-theme-destructive/10 hover:text-theme-destructive transition-colors font-medium group"
                                     >
                                         <span>"Delete"</span>
+                                        <svg class="w-3.5 h-3.5 text-theme-muted group-hover:text-theme-destructive transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                            <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                        </svg>
                                     </button>
                                 }.into_any()
                             }
@@ -815,7 +815,7 @@ pub fn Sidebar() -> impl IntoView {
                                             ctx.set_inline_creation.set(InlineCreationTarget::Chat { parent_path: None });
                                             ctx.set_inline_input_text.set(String::new());
                                         }
-                                        class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-theme-bg hover:text-theme-text text-left transition-colors font-medium"
+                                        class="w-full flex items-center justify-between px-3 py-1.5 rounded-lg hover:bg-theme-bg hover:text-theme-text text-left transition-colors font-medium"
                                     >
                                         <span>"New Chat"</span>
                                     </button>
@@ -824,7 +824,7 @@ pub fn Sidebar() -> impl IntoView {
                                             ctx.set_inline_creation.set(InlineCreationTarget::Folder { parent_path: None });
                                             ctx.set_inline_input_text.set(String::new());
                                         }
-                                        class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-theme-bg hover:text-theme-text text-left transition-colors font-medium"
+                                        class="w-full flex items-center justify-between px-3 py-1.5 rounded-lg hover:bg-theme-bg hover:text-theme-text text-left transition-colors font-medium"
                                     >
                                         <span>"New Directory"</span>
                                     </button>
@@ -833,7 +833,7 @@ pub fn Sidebar() -> impl IntoView {
                                         on:click=move |_| {
                                             ctx.set_expanded_folders.set(std::collections::HashSet::new());
                                         }
-                                        class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-theme-bg hover:text-theme-text text-left transition-colors font-medium"
+                                        class="w-full flex items-center justify-between px-3 py-1.5 rounded-lg hover:bg-theme-bg hover:text-theme-text text-left transition-colors font-medium"
                                     >
                                         <span>"Collapse All"</span>
                                     </button>
@@ -977,7 +977,7 @@ fn FolderNode(
     node: ChatTreeNode,
     depth: usize,
     on_select_chat: Callback<String>,
-    on_context_menu: Callback<(web_sys::MouseEvent, ContextMenuTarget)>,
+    on_context_menu: Callback<(web_sys::MouseEvent, ContextMenuTarget, Option<(f64, f64)>)>,
     on_drag_start: Callback<(web_sys::DragEvent, String, bool)>,
     on_commit_creation: Callback<()>,
 ) -> impl IntoView {
@@ -1085,10 +1085,10 @@ fn FolderNode(
                 path: path_context.clone(),
             }
         };
-        on_context_menu.run((ev, target));
+        on_context_menu.run((ev, target, None));
     };
     
-    let indent_style = format!("padding-left: {}rem;", (depth as f32) * 0.75 + 0.5);
+    let indent_style = format!("padding-left: {}rem;", (depth as f32) * 1.25 + 0.5);
 
     let view_inline_chat_input = {
         let on_commit = on_commit_creation.clone();
@@ -1100,18 +1100,13 @@ fn FolderNode(
                     let _ = el.focus();
                 }
             });
-            let ind = format!("padding-left: {}rem;", (d as f32) * 0.75 + 0.5);
+            let ind = format!("padding-left: {}rem;", (d as f32) * 1.25 + 0.5);
             let on_c = on_commit.clone();
             view! {
                 <div
                     style=ind
-                    class="flex items-center gap-2 py-1.5 pr-2 rounded-lg bg-theme-bg/40 text-sm border border-theme-accent/50 animate-scale-in"
+                    class="flex items-center py-1.5 pr-2 rounded-lg bg-theme-bg/40 text-sm border border-theme-accent/50 animate-scale-in"
                 >
-                    <span class="text-theme-muted/50 shrink-0">
-                        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                        </svg>
-                    </span>
                     <input
                         type="text"
                         class="w-full bg-transparent text-theme-text outline-none text-sm"
@@ -1161,7 +1156,7 @@ fn FolderNode(
                     let _ = el.focus();
                 }
             });
-            let ind = format!("padding-left: {}rem;", (d as f32) * 0.75 + 0.5);
+            let ind = format!("padding-left: {}rem;", (d as f32) * 1.25 + 0.5);
             let on_c = on_commit.clone();
             view! {
                 <div
@@ -1171,11 +1166,6 @@ fn FolderNode(
                     <span class="text-theme-muted/80">
                         <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
                             <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
-                        </svg>
-                    </span>
-                    <span class="text-theme-accent/80 shrink-0">
-                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
                         </svg>
                     </span>
                     <input
@@ -1222,7 +1212,7 @@ fn FolderNode(
         let dragover_class = move || if is_dragged_over.get() {
             "bg-theme-accent/10 border-theme-accent/50 text-theme-text font-semibold"
         } else {
-            "text-theme-muted hover:bg-theme-bg/40 hover:text-theme-text"
+            "text-theme-text hover:bg-theme-bg/40"
         };
         
         view! {
@@ -1252,11 +1242,6 @@ fn FolderNode(
                                     <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
                                 </svg>
                             </Show>
-                        </span>
-                        <span class="text-theme-accent/80 shrink-0">
-                            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                            </svg>
                         </span>
                         <span class="font-medium truncate">{node.name.clone()}</span>
                     </div>
@@ -1323,16 +1308,28 @@ fn FolderNode(
         }.into_any()
     } else {
         let chat_id = node.chat_id.clone().unwrap_or_default();
-        let is_active = move || ctx.current_conversation_id.get() == Some(chat_id.clone());
-        let active_class = move || if is_active() {
-            "bg-theme-bg text-theme-text font-semibold border-l-2 border-theme-accent"
+        let is_active = Memo::new({
+            let chat_id = chat_id.clone();
+            move |_| ctx.current_conversation_id.get() == Some(chat_id.clone())
+        });
+        let active_class = move || if is_active.get() {
+            if ctx.sidebar_focused.get() {
+                "bg-theme-accent text-white font-medium shadow-sm"
+            } else {
+                "bg-theme-selected-inactive text-theme-text font-medium"
+            }
         } else {
-            "text-theme-muted hover:bg-theme-bg/40 hover:text-theme-text border-l-2 border-transparent"
+            "text-theme-muted hover:bg-theme-bg/40 hover:text-theme-text"
         };
         
         let chat_id_click = node.chat_id.clone().unwrap_or_default();
         let on_sel_c = on_select_chat.clone();
-        
+
+        let path_context_kebab = node.path.clone();
+        let name_context_kebab = node.name.clone();
+        let chat_id_context_kebab = node.chat_id.clone();
+        let on_ctx_kebab = on_context_menu.clone();
+
         view! {
             <div
                 draggable="true"
@@ -1343,16 +1340,52 @@ fn FolderNode(
                     on_sel_c.run(chat_id_click.clone());
                 }
                 style=indent_style
-                class={move || format!("flex items-center justify-between py-1.5 pr-2 rounded-lg cursor-pointer transition-all border border-transparent text-sm {}", active_class())}
+                class={move || format!("flex items-center justify-between py-1 px-2 rounded-lg cursor-pointer transition-all border border-transparent text-sm {}", active_class())}
             >
-                <div class="flex items-center gap-2 min-w-0">
-                    <span class="text-theme-muted/50 shrink-0">
-                        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                        </svg>
-                    </span>
+                <div class="flex items-center min-w-0">
                     <span class="truncate">{node.name.clone()}</span>
                 </div>
+
+                <Show when=move || is_active.get()>
+                    {
+                        let path_c = path_context_kebab.clone();
+                        let name_c = name_context_kebab.clone();
+                        let chat_c = chat_id_context_kebab.clone();
+                        let on_ctx = on_ctx_kebab.clone();
+                        view! {
+                            <button
+                                on:click=move |ev: web_sys::MouseEvent| {
+                                    ev.stop_propagation();
+                                    ev.prevent_default();
+
+                                    let target = ContextMenuTarget::Chat {
+                                        id: chat_c.clone().unwrap_or_default(),
+                                        title: name_c.clone(),
+                                        path: path_c.clone(),
+                                    };
+
+                                    let mut x = ev.client_x() as f64;
+                                    let mut y = ev.client_y() as f64;
+
+                                    if let Some(target_el) = ev.current_target() {
+                                        if let Ok(el) = target_el.dyn_into::<web_sys::Element>() {
+                                            let rect = el.get_bounding_client_rect();
+                                            x = rect.left();
+                                            y = rect.bottom() + 4.0;
+                                        }
+                                    }
+
+                                    on_ctx.run((ev, target, Some((x, y))));
+                                }
+                                class="p-0.5 rounded hover:bg-white/20 text-current opacity-70 hover:opacity-100 transition-all shrink-0 ml-1.5"
+                            >
+                                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M5 12h.01M12 12h.01M19 12h.01M6 12a1 1 0 11-2 0 1 1 0 012 0zm6 0a1 1 0 11-2 0 1 1 0 012 0zm6 0a1 1 0 11-2 0 1 1 0 012 0z" />
+                                </svg>
+                            </button>
+                        }
+                    }
+                </Show>
             </div>
         }.into_any()
     }

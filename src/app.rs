@@ -120,6 +120,26 @@ pub fn App() -> impl IntoView {
     let (inline_creation, set_inline_creation) = signal(context::InlineCreationTarget::None);
     let (inline_input_text, set_inline_input_text) = signal(String::new());
 
+    // Focus state signals
+    let (sidebar_focused, set_sidebar_focused) = signal(true);
+
+    // Global click listener to track sidebar focus
+    Effect::new(move |_| {
+        let handle_click = Closure::wrap(Box::new(move |ev: web_sys::MouseEvent| {
+            if let Some(target) = ev.target() {
+                if let Ok(el) = target.dyn_into::<web_sys::Element>() {
+                    let inside_sidebar = el.closest("aside").unwrap_or(None).is_some();
+                    set_sidebar_focused.set(inside_sidebar);
+                }
+            }
+        }) as Box<dyn FnMut(web_sys::MouseEvent)>);
+
+        if let Some(window) = web_sys::window() {
+            let _ = window.add_event_listener_with_callback("click", handle_click.as_ref().unchecked_ref());
+        }
+        handle_click.forget();
+    });
+
     // Context sharing
     let ctx = AppContext {
         conversations,
@@ -169,6 +189,8 @@ pub fn App() -> impl IntoView {
         set_inline_creation,
         inline_input_text,
         set_inline_input_text,
+        sidebar_focused,
+        set_sidebar_focused,
     };
     provide_context(ctx);
 

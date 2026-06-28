@@ -65,4 +65,8 @@ pub struct AppContext {
     pub set_inline_creation: WriteSignal<InlineCreationTarget>,
     pub inline_input_text: ReadSignal<String>,
     pub set_inline_input_text: WriteSignal<String>,
+
+    // Focus state signals
+    pub sidebar_focused: ReadSignal<bool>,
+    pub set_sidebar_focused: WriteSignal<bool>,
 }

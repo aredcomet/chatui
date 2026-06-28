@@ -462,7 +462,7 @@ pub fn MessageFeed() -> impl IntoView {
                                             <button
                                                 type="button"
                                                 title="Delete message"
-                                                class="p-1.5 rounded-lg hover:bg-theme-bg hover:text-red-400 text-theme-muted transition-colors disabled:opacity-30 theme-transition"
+                                                class="p-1.5 rounded-lg hover:bg-theme-bg hover:text-theme-destructive text-theme-muted transition-colors disabled:opacity-30 theme-transition"
                                                 disabled=move || ctx.is_streaming.get()
                                                 on:click=move |_| delete_message(idx)
                                             >
@@ -500,7 +500,7 @@ pub fn MessageFeed() -> impl IntoView {
                                                                 <div class="flex flex-col w-full">
                                                                     <Show
                                                                         when=move || thinking_opt_for_show.is_some()
-                                                                        fallback=move || view! {}
+                                                                        fallback=|| view! {}
                                                                     >
                                                                         <ThinkingBlock
                                                                             thinking=thinking_opt_for_block.clone().unwrap_or_default()
@@ -774,7 +774,7 @@ pub fn MessageFeed() -> impl IntoView {
                                                         <button
                                                             type="button"
                                                             title="Delete response"
-                                                            class="p-1.5 rounded-lg hover:bg-theme-panel hover:text-red-400 text-theme-muted transition-colors disabled:opacity-30 theme-transition"
+                                                            class="p-1.5 rounded-lg hover:bg-theme-panel hover:text-theme-destructive text-theme-muted transition-colors disabled:opacity-30 theme-transition"
                                                             disabled=move || ctx.is_streaming.get()
                                                             on:click=move |_| delete_message(idx)
                                                         >

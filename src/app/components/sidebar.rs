@@ -211,6 +211,9 @@ pub fn Sidebar() -> impl IntoView {
 
     let commit_inline_creation = move || {
         let state = ctx.inline_creation.get_untracked();
+        if state == InlineCreationTarget::None {
+            return;
+        }
         let input_val = ctx.inline_input_text.get_untracked();
 
         ctx.set_inline_creation.set(InlineCreationTarget::None);
@@ -483,9 +486,22 @@ pub fn Sidebar() -> impl IntoView {
                     on:input=move |ev| ctx.set_inline_input_text.set(event_target_value(&ev))
                     on:keydown=move |ev: web_sys::KeyboardEvent| {
                         if ev.key() == "Enter" {
-                            commit_inline_creation();
+                            ev.prevent_default();
+                            ev.stop_propagation();
+                            if let Some(target) = ev.target() {
+                                if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                                    let _ = input.blur();
+                                }
+                            }
                         } else if ev.key() == "Escape" {
+                            ev.prevent_default();
+                            ev.stop_propagation();
                             ctx.set_inline_creation.set(InlineCreationTarget::None);
+                            if let Some(target) = ev.target() {
+                                if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                                    let _ = input.blur();
+                                }
+                            }
                         }
                     }
                     on:blur=move |_| {
@@ -527,9 +543,22 @@ pub fn Sidebar() -> impl IntoView {
                     on:input=move |ev| ctx.set_inline_input_text.set(event_target_value(&ev))
                     on:keydown=move |ev: web_sys::KeyboardEvent| {
                         if ev.key() == "Enter" {
-                            commit_inline_creation();
+                            ev.prevent_default();
+                            ev.stop_propagation();
+                            if let Some(target) = ev.target() {
+                                if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                                    let _ = input.blur();
+                                }
+                            }
                         } else if ev.key() == "Escape" {
+                            ev.prevent_default();
+                            ev.stop_propagation();
                             ctx.set_inline_creation.set(InlineCreationTarget::None);
+                            if let Some(target) = ev.target() {
+                                if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                                    let _ = input.blur();
+                                }
+                            }
                         }
                     }
                     on:blur=move |_| {
@@ -730,7 +759,7 @@ pub fn Sidebar() -> impl IntoView {
                                         on:click=move |_| {
                                             set_modal_action.set(ModalAction::DeleteFolder { path: p4.clone(), name: n4.clone() });
                                         }
-                                        class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-theme-bg text-red-400 hover:text-red-300 text-left transition-colors font-medium"
+                                        class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-theme-bg text-theme-destructive hover:text-theme-destructive-hover text-left transition-colors font-medium"
                                     >
                                         <span>"Delete"</span>
                                     </button>
@@ -773,7 +802,7 @@ pub fn Sidebar() -> impl IntoView {
                                         on:click=move |_| {
                                             set_modal_action.set(ModalAction::DeleteChat { id: id_del.clone(), name: t_del.clone() });
                                         }
-                                        class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-theme-bg text-red-400 hover:text-red-300 text-left transition-colors font-medium"
+                                        class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-theme-bg text-theme-destructive hover:text-theme-destructive-hover text-left transition-colors font-medium"
                                     >
                                         <span>"Delete"</span>
                                     </button>
@@ -903,7 +932,7 @@ pub fn Sidebar() -> impl IntoView {
                                             </button>
                                             <button
                                                 on:click=move |_| execute_modal_action(())
-                                                class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-red-500 text-white hover:bg-red-600 transition-colors"
+                                                class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-theme-destructive text-theme-destructive-text hover:bg-theme-destructive-hover transition-colors"
                                             >
                                                 "Delete"
                                             </button>
@@ -925,7 +954,7 @@ pub fn Sidebar() -> impl IntoView {
                                             </button>
                                             <button
                                                 on:click=move |_| execute_modal_action(())
-                                                class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-red-500 text-white hover:bg-red-600 transition-colors"
+                                                class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-theme-destructive text-theme-destructive-text hover:bg-theme-destructive-hover transition-colors"
                                             >
                                                 "Delete"
                                             </button>
@@ -1090,13 +1119,23 @@ fn FolderNode(
                         node_ref=input_ref
                         prop:value=ctx.inline_input_text
                         on:input=move |ev| ctx.set_inline_input_text.set(event_target_value(&ev))
-                        on:keydown={
-                            let on_c_key = on_c.clone();
-                            move |ev: web_sys::KeyboardEvent| {
-                                if ev.key() == "Enter" {
-                                    on_c_key.run(());
-                                } else if ev.key() == "Escape" {
-                                    ctx.set_inline_creation.set(InlineCreationTarget::None);
+                        on:keydown=move |ev: web_sys::KeyboardEvent| {
+                            if ev.key() == "Enter" {
+                                ev.prevent_default();
+                                ev.stop_propagation();
+                                if let Some(target) = ev.target() {
+                                    if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                                        let _ = input.blur();
+                                    }
+                                }
+                            } else if ev.key() == "Escape" {
+                                ev.prevent_default();
+                                ev.stop_propagation();
+                                ctx.set_inline_creation.set(InlineCreationTarget::None);
+                                if let Some(target) = ev.target() {
+                                    if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                                        let _ = input.blur();
+                                    }
                                 }
                             }
                         }
@@ -1146,13 +1185,23 @@ fn FolderNode(
                         node_ref=input_ref
                         prop:value=ctx.inline_input_text
                         on:input=move |ev| ctx.set_inline_input_text.set(event_target_value(&ev))
-                        on:keydown={
-                            let on_c_key = on_c.clone();
-                            move |ev: web_sys::KeyboardEvent| {
-                                if ev.key() == "Enter" {
-                                    on_c_key.run(());
-                                } else if ev.key() == "Escape" {
-                                    ctx.set_inline_creation.set(InlineCreationTarget::None);
+                        on:keydown=move |ev: web_sys::KeyboardEvent| {
+                            if ev.key() == "Enter" {
+                                ev.prevent_default();
+                                ev.stop_propagation();
+                                if let Some(target) = ev.target() {
+                                    if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                                        let _ = input.blur();
+                                    }
+                                }
+                            } else if ev.key() == "Escape" {
+                                ev.prevent_default();
+                                ev.stop_propagation();
+                                ctx.set_inline_creation.set(InlineCreationTarget::None);
+                                if let Some(target) = ev.target() {
+                                    if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                                        let _ = input.blur();
+                                    }
                                 }
                             }
                         }

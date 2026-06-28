@@ -638,7 +638,7 @@ pub fn MessageFeed() -> impl IntoView {
                                                                         view! {
                                                                             <div class={move || {
                                                                                 if sr_class.as_deref() == Some("cancelled") {
-                                                                                    "flex items-center gap-1 text-amber-400/80".to_string()
+                                                                                    "flex items-center gap-1 text-theme-warning/80".to_string()
                                                                                 } else {
                                                                                     "flex items-center gap-1".to_string()
                                                                                 }

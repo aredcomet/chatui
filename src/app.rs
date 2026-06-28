@@ -602,7 +602,7 @@ pub fn App() -> impl IntoView {
             // Toast Notification
             <Show when=move || toast_message.get().is_some()>
                 <div class="fixed bottom-6 right-6 z-50 px-4 py-3 rounded-xl bg-theme-panel border border-theme-border/80 text-theme-text text-xs font-semibold shadow-2xl flex items-center gap-2 select-none theme-transition">
-                    <svg class="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                    <svg class="w-4 h-4 text-theme-success" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
                         <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
                     <span>{move || toast_message.get().unwrap_or_default()}</span>
